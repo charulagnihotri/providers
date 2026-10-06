@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Shop Ad – Providers Real Estate</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        background: #04070b;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        font-family: "Montserrat", Arial, sans-serif;
+      }
+      .ad {
+        width: 1080px;
+        height: 1080px;
+        position: relative;
+        overflow: hidden;
+        color: #fff;
+        background: radial-gradient(
+            circle at 88% 8%,
+            rgba(212, 175, 55, 0.16),
+            transparent 42%
+          ),
+          radial-gradient(
+            circle at -5% 105%,
+            rgba(212, 175, 55, 0.12),
+            transparent 38%
+          ),
+          linear-gradient(155deg, #0b1622, #132436 55%, #0b1622);
+        display: flex;
+        flex-direction: column;
+        padding: 52px 60px 0;
+      }
+      .ring {
+        position: absolute;
+        width: 560px;
+        height: 560px;
+        border: 1.5px solid rgba(212, 175, 55, 0.28);
+        border-radius: 50%;
+        top: -210px;
+        right: -170px;
+      }
+      .ring::before {
+        content: "";
+        position: absolute;
+        inset: 60px;
+        border: 1px solid rgba(212, 175, 55, 0.18);
+        border-radius: 50%;
+      }
+      .top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .brand {
+        font-weight: 800;
+        font-size: 30px;
+        letter-spacing: 2px;
+      }
+      .brand span {
+        color: #d4af37;
+      }
+      .brand small {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 5px;
+        color: #cfd8e3;
+        margin-top: 4px;
+      }
+      .m3m {
+        border: 2px solid #d4af37;
+        padding: 10px 22px;
+        font-weight: 800;
+        font-size: 24px;
+        letter-spacing: 3px;
+        color: #d4af37;
+        border-radius: 8px;
+        background: rgba(212, 175, 55, 0.08);
+      }
+      .kicker {
+        margin-top: 32px;
+        font-size: 21px;
+        font-weight: 700;
+        letter-spacing: 6px;
+        color: #e6c86a;
+      }
+      h1 {
+        font-size: 70px;
+        font-weight: 900;
+        line-height: 1.08;
+        margin-top: 10px;
+      }
+      h1 em {
+        font-style: normal;
+        background: linear-gradient(90deg, #f0d67a, #c9a227);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .photo {
+        margin-top: 28px;
+        height: 380px;
+        border-radius: 18px;
+        border: 2px solid rgba(212, 175, 55, 0.8);
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+        position: relative;
+        overflow: hidden;
+        background: linear-gradient(135deg, #182a3d, #0e1c2b);
+      }
+      .photo img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .tag {
+        position: absolute;
+        top: 18px;
+        left: 18px;
+        background: linear-gradient(90deg, #f0d67a, #c9a227);
+        color: #132436;
+        font-weight: 800;
+        font-size: 19px;
+        letter-spacing: 2px;
+        padding: 10px 18px;
+        border-radius: 999px;
+      }
+      .chips {
+        margin-top: 26px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+      }
+      .chip {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(212, 175, 55, 0.45);
+        border-radius: 14px;
+        padding: 16px 8px;
+        text-align: center;
+      }
+      .chip b {
+        display: block;
+        font-size: 25px;
+        font-weight: 800;
+        color: #f0d67a;
+      }
+      .chip span {
+        display: block;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 2px;
+        color: #c8d2dd;
+        margin-top: 5px;
+      }
+      .ideal {
+        margin-top: 18px;
+        font-size: 19px;
+        font-weight: 600;
+        color: #d6dee8;
+      }
+      .ideal b {
+        color: #f0d67a;
+      }
+      .loc {
+        margin-top: 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 26px;
+        font-weight: 700;
+      }
+      .pin {
+        width: 36px;
+        height: 36px;
+        flex: none;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #f0d67a, #c9a227);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .footer {
+        margin: auto -60px 0;
+        background: linear-gradient(90deg, #f0d67a, #c9a227);
+        color: #132436;
+        padding: 24px 60px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .footer .co {
+        font-size: 24px;
+        font-weight: 800;
+        letter-spacing: 1px;
+      }
+      .footer .co small {
+        display: block;
+        font-size: 15px;
+        font-weight: 600;
+        margin-top: 4px;
+        opacity: 0.85;
+      }
+      .footer .cta {
+        text-align: right;
+      }
+      .footer .cta b {
+        display: block;
+        font-size: 34px;
+        font-weight: 900;
+      }
+      .footer .cta span {
+        display: block;
+        font-size: 19px;
+        font-weight: 700;
+        margin-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="ad">
+      <div class="ring"></div>
+      <div class="top">
+        <div class="brand">
+          PROVIDERS <span>REAL ESTATE</span><small>PVT. LTD.</small>
+        </div>
+        <div class="m3m">M3M URBANA</div>
+      </div>
+      <div class="kicker">★ PRIME COMMERCIAL OPPORTUNITY</div>
+      <h1>GROUND FLOOR SHOP<br /><em>FOR SALE</em></h1>
+      <div class="photo">
+        <!-- Keep your shop photo named shop.jpg in the same folder -->
+        <img src="shop.jpg" alt="Shop at M3M Urbana" />
+        <div class="tag">2-SIDE OPEN CORNER UNIT</div>
+      </div>
+      <div class="chips">
+        <div class="chip"><b>666</b><span>SQ. FT.</span></div>
+        <div class="chip"><b>2-SIDE</b><span>OPEN</span></div>
+        <div class="chip"><b>GROUND</b><span>FLOOR</span></div>
+        <div class="chip"><b>REASONABLE</b><span>PRICE</span></div>
+      </div>
+      <div class="ideal">
+        Ideal for: <b>Showroom • Café • Retail • Salon • Clinic</b>
+      </div>
+      <div class="loc">
+        <div class="pin">
+          <svg width="20" height="20" viewBox="0 0 24 24">
+            <path
+              d="M12 21s-7-5.1-7-11a7 7 0 1 1 14 0c0 5.9-7 11-7 11z"
+              fill="#132436"
+            />
+            <circle cx="12" cy="10" r="2.6" fill="#c9a227" />
+          </svg>
+        </div>
+        M3M Urbana, Sector 67, Gurgaon
+      </div>
+      <div class="footer">
+        <div class="co">
+          PROVIDERS REAL ESTATE PVT. LTD.<small
+            >Your Trusted Real Estate Partner</small
+          >
+        </div>
+        <div class="cta">
+          <b>+91 98103 33886</b><span>vipulproviders@gmail.com</span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
