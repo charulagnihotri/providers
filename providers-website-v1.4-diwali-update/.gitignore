@@ -1,0 +1,15 @@
+# Secrets — never commit these
+.env
+*.env
+!.env.example
+
+# Database & uploads (live locally; Supabase in production)
+data/
+
+# Dependencies
+node_modules/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log
