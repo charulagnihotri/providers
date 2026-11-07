@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Providers Real Estate — Brokerage Management System</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;1,500&family=Jost:wght@300;400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="admin.css" />
+  </head>
+  <body>
+    <!-- Topbar -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="/">
+          <span class="brand-name serif">Providers</span>
+          <span class="brand-sub">BROKERAGE FIRM OS</span>
+        </a>
+        <div class="top-actions">
+          <span class="who" id="who">Loading…</span>
+          <span class="role-badge" id="roleBadge">Admin</span>
+          <a class="ghost-btn" href="/" target="_blank">🌐 Live Website</a>
+          <button type="button" class="ghost-btn" id="logout">Sign out</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Navigation Bar -->
+    <nav class="nav-shelf">
+      <div class="nav-shelf-inner" id="dashTabs">
+        <button type="button" data-view="overview" class="shelf-btn active">
+          <span class="icon">📊</span> Overview
+        </button>
+        <button type="button" data-view="leads" class="shelf-btn">
+          <span class="icon">👥</span> Leads CRM <span class="badge-count" id="leadsCountBadge">0</span>
+        </button>
+        <button type="button" data-view="kanban" class="shelf-btn">
+          <span class="icon">📋</span> Deals Kanban
+        </button>
+        <button type="button" data-view="listings" class="shelf-btn">
+          <span class="icon">🏡</span> Inventory & Listings
+        </button>
+        <button type="button" data-view="visits" class="shelf-btn">
+          <span class="icon">📅</span> Site Visits
+        </button>
+        <button type="button" data-view="email-marketing" class="shelf-btn highlight-tab">
+          <span class="icon">✉️</span> Email Marketing (Brevo)
+        </button>
+        <button type="button" data-view="ad-studio" class="shelf-btn">
+          <span class="icon">🎨</span> Ad Studio
+        </button>
+        <button type="button" data-view="reminders" class="shelf-btn">
+          <span class="icon">⏰</span> Reminders
+        </button>
+        <button type="button" data-view="settings" class="shelf-btn">
+          <span class="icon">⚙️</span> Personal Settings
+        </button>
+      </div>
+    </nav>
+
+    <main class="dash">
+      <!-- SECTION 1: OVERVIEW & EXECUTIVE ANALYTICS -->
+      <section class="view-panel" id="view-overview">
+        <div class="quick-banner">
+          <div>
+            <h2 class="serif">Executive Command Center</h2>
+            <p class="quick-sub">South Delhi & Gurugram Luxury Real Estate Operations</p>
+          </div>
+          <div class="quick-action-bar">
+            <button type="button" class="solid-btn" id="btnQuickAddLead">➕ Add Lead</button>
+            <button type="button" class="solid-btn" id="btnQuickAddListing">➕ Add Listing</button>
+            <button type="button" class="solid-btn gold-btn" id="btnQuickScheduleVisit">📅 Schedule Visit</button>
+            <button type="button" class="solid-btn outline-navy" id="btnQuickEmail">✉️ Draft Email</button>
+          </div>
+        </div>
+
+        <div class="cards" id="overviewCards">
+          <!-- Dynamically populated KPI cards -->
+        </div>
+
+        <div class="overview-grid">
+          <div class="panel">
+            <div class="panel-head">
+              <h3 class="serif">Recent Client Inquiries</h3>
+              <button type="button" class="link-btn" id="btnViewAllLeads">View all CRM leads &#8594;</button>
+            </div>
+            <div class="tablewrap">
+              <table id="overviewRecentLeadsTable">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Client</th>
+                    <th>Interest</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h3 class="serif">Upcoming Site Visits & Follow-ups</h3>
+              <button type="button" class="link-btn" id="btnViewAllVisits">Manage visits &#8594;</button>
+            </div>
+            <div class="visits-quick-list" id="overviewVisitsList">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 2: LEADS CRM -->
+      <section class="view-panel hidden" id="view-leads">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="serif">Client Relationship Management (CRM)</h2>
+              <p class="panel-sub">Manage prospective buyers, tenant requirements, and consultation leads.</p>
+            </div>
+            <div class="panel-head-actions">
+              <button type="button" class="solid-btn" id="btnOpenNewLeadModal">➕ Add New Lead</button>
+              <a href="/api/admin/leads.csv" class="ghost-btn dark" download>📥 Export CSV</a>
+            </div>
+          </div>
+
+          <!-- CRM Filter & Search Bar -->
+          <div class="crm-toolbar">
+            <div class="crm-search">
+              <input type="text" id="leadSearchInput" placeholder="Search by client name, phone, email, notes..." />
+              <button type="button" id="leadSearchClear" class="hidden">&times;</button>
+            </div>
+            <div class="crm-status-filters" id="leadStatusFilters">
+              <!-- Status filter buttons rendered via JS -->
+            </div>
+          </div>
+
+          <p class="empty hidden" id="emptyLeadsMsg">No leads found matching the filter criteria.</p>
+
+          <div class="tablewrap">
+            <table id="leadsTable">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Client Name</th>
+                  <th>Direct Contact</th>
+                  <th>Interest / Requirement</th>
+                  <th>Lead Source</th>
+                  <th>Assigned To</th>
+                  <th>Pipeline Status</th>
+                  <th>Internal Notes (Auto-saves)</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 3: DEALS & MARKETING KANBAN -->
+      <section class="view-panel hidden" id="view-kanban">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="serif">Pipeline Kanban Board</h2>
+              <p class="panel-sub">Visual pipeline tracking for deals, inquiries, and listing marketing stages.</p>
+            </div>
+            <div class="kanban-mode-switcher">
+              <button type="button" class="kanban-tab active" id="kbTabLeads">Client Leads Pipeline</button>
+              <button type="button" class="kanban-tab" id="kbTabListings">Listings Marketing Pipeline</button>
+            </div>
+          </div>
+          <p class="kanban-hint">💡 Drag a card onto another stage to move it — or use the “Move / Stage” menu on the card (handy on phones). Dragging a listing into <strong>published</strong> takes it live on the website.</p>
+
+          <div class="kanban-container" id="kanbanBoard">
+            <!-- Dynamically populated Kanban columns -->
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 4: INVENTORY & LISTINGS -->
+      <section class="view-panel hidden" id="view-listings">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="serif">Property Inventory & Listings</h2>
+              <p class="panel-sub">Manage ad flyers, property photos, specifications, and website publication.</p>
+            </div>
+            <div class="panel-head-actions">
+              <a href="/api/admin/listings.csv" class="ghost-btn dark" download>📥 Export CSV</a>
+              <button type="button" class="solid-btn" id="newListingBtn">➕ Add New Property</button>
+            </div>
+          </div>
+
+          <div class="tablewrap">
+            <table id="listingsTable">
+              <thead>
+                <tr>
+                  <th>Ad Creative</th>
+                  <th>Title & Location</th>
+                  <th>Property Type</th>
+                  <th>Price</th>
+                  <th>Photo Gallery</th>
+                  <th>Website Status</th>
+                  <th>Marketing Stage</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 5: SITE VISITS SCHEDULER -->
+      <section class="view-panel hidden" id="view-visits">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="serif">Site Visits & Property Tours</h2>
+              <p class="panel-sub">Coordinate property inspections and in-person walkthroughs with clients.</p>
+            </div>
+            <button type="button" class="solid-btn" id="btnOpenNewVisitModal">📅 Schedule New Site Visit</button>
+          </div>
+
+          <div class="tablewrap">
+            <table id="visitsTable">
+              <thead>
+                <tr>
+                  <th>Visit Date & Time</th>
+                  <th>Client</th>
+                  <th>Contact</th>
+                  <th>Target Property</th>
+                  <th>Visit Status</th>
+                  <th>Notes / Preparation</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 6: EMAIL MARKETING (BREVO INTEGRATION) -->
+      <section class="view-panel hidden" id="view-email-marketing">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="serif">Email Campaign Studio</h2>
+              <p class="panel-sub">
+                Brand-matched luxury emails — write with AI, preview exactly what clients receive, then copy into Brevo or send a test.
+              </p>
+            </div>
+            <div class="panel-head-actions">
+              <span class="brevo-chip" id="brevoStatusChip" title="Whether a Brevo API key is configured on the server">🔑 Brevo: checking…</span>
+              <button type="button" class="ghost-btn dark" id="btnNewCampaign">New Campaign</button>
+              <button type="button" class="solid-btn" id="btnSaveCampaign">💾 Save Template</button>
+            </div>
+          </div>
+
+          <!-- AI Copywriter (free Gemini) -->
+          <div class="ai-writer-box">
+            <div class="ai-head">
+              <strong>✨ Write with AI</strong>
+              <span class="field-hint">Powered by the free Gemini tier — drafts a subject, preheader and body in the Providers voice. Always read and personalise before sending.</span>
+            </div>
+            <div class="ai-controls">
+              <label>Feature listing
+                <select id="aiListing">
+                  <option value="">General portfolio briefing</option>
+                </select>
+              </label>
+              <label>Featured picture
+                <select id="aiImage">
+                  <option value="">No picture in email</option>
+                </select>
+              </label>
+              <label>Tone
+                <select id="aiTone">
+                  <option value="discreet">Discreet & exclusive</option>
+                  <option value="urgent">Investor alert (urgent)</option>
+                  <option value="warm">Warm & personal</option>
+                </select>
+              </label>
+            </div>
+            <div class="ai-brief-row">
+              <textarea id="aiBrief" rows="2" placeholder="Optional brief — e.g. “Focus on the park-facing balcony and Italian marble; invite readers to a Thursday–Saturday private viewing”"></textarea>
+              <button type="button" class="solid-btn gold-btn" id="btnAiWrite">✨ Write the email</button>
+            </div>
+            <p class="form-msg" id="aiMsg"></p>
+          </div>
+
+          <!-- Studio Layout: Left Editor, Right Live Preview -->
+          <div class="email-studio-layout">
+            <!-- Left: Inputs -->
+            <div class="email-editor-pane">
+              <div class="template-selector-box">
+                <label>Load Pre-Built Luxury Template:
+                  <select id="campaignTemplateSelect">
+                    <option value="">-- Choose a template --</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="form-field">
+                <label for="emTitle">Internal Campaign Name
+                  <span class="field-hint">(For your dashboard tracking)</span>
+                </label>
+                <input type="text" id="emTitle" placeholder="e.g. October Luxury Builder Floors Blast" />
+              </div>
+
+              <div class="form-field">
+                <label for="emSubject">Subject Line
+                  <span class="field-hint">(What recipients see in inbox)</span>
+                </label>
+                <div class="subject-input-wrap">
+                  <input type="text" id="emSubject" placeholder="e.g. Private Off-Market Briefing: Park-Facing 3 BHK in GK-I" />
+                  <button type="button" class="chip-btn" id="btnSubjectSuggestion" title="Insert real estate subject hook">⚡ Suggestions</button>
+                </div>
+              </div>
+
+              <div class="form-field">
+                <label for="emPreheader">Preheader / Preview Text
+                  <span class="field-hint">(Inbox summary line beside subject)</span>
+                </label>
+                <input type="text" id="emPreheader" placeholder="e.g. Rare park-facing floor with Italian marble and double stilt parking" />
+              </div>
+
+              <div class="form-field">
+                <div class="body-label-row">
+                  <label for="emBody">Main Email Body</label>
+                  <div class="body-helper-tags">
+                    <span>Tags:</span>
+                    <button type="button" class="tag-insert" data-tag="{{First_Name}}">+ Name</button>
+                    <button type="button" class="tag-insert" data-tag="{{Listing_Title}}">+ Property</button>
+                    <button type="button" class="tag-insert" data-tag="{{Listing_Price}}">+ Price</button>
+                    <button type="button" class="tag-insert" data-tag="+91 98103 33886">+ Phone</button>
+                  </div>
+                </div>
+                <textarea id="emBody" rows="12" placeholder="Write your email body here..."></textarea>
+              </div>
+
+              <!-- Fixed Footer Notification -->
+              <div class="fixed-footer-box">
+                <div class="ff-head">
+                  <span class="lock-icon">🔒</span>
+                  <strong>Standardized Brand Footer (Auto-Appended to Every Email)</strong>
+                </div>
+                <p class="ff-desc">
+                  Includes company logo, official company name (Providers Real Estate Pvt. Ltd.), micro-markets, Vipul Agnihotri's direct contact, Instagram handle, and Brevo-compliant unsubscribe tags (<code>{{ unsubscribe }}</code> and <code>{{ mirror }}</code>).
+                </p>
+              </div>
+
+              <!-- Action Buttons -->
+              <div class="email-action-bar">
+                <button type="button" class="solid-btn copy-btn" id="btnCopyBrevoHTML">
+                  📋 Copy HTML for Brevo
+                </button>
+                <button type="button" class="ghost-btn dark copy-btn" id="btnCopySubject">
+                  📋 Copy Subject Line
+                </button>
+                <button type="button" class="ghost-btn dark" id="btnOpenBrevoTestModal">
+                  ✉️ Send Test Email
+                </button>
+              </div>
+              <p class="copy-status" id="copyStatusMsg"></p>
+            </div>
+
+            <!-- Right: Real-Time Live Preview -->
+            <div class="email-preview-pane">
+              <div class="preview-header">
+                <span class="preview-title">Live Email Client Preview</span>
+                <div class="preview-toggle">
+                  <button type="button" class="pv-btn active" id="btnPreviewDesktop">🖥️ Desktop</button>
+                  <button type="button" class="pv-btn" id="btnPreviewMobile">📱 Mobile</button>
+                </div>
+              </div>
+
+              <div class="email-preview-envelope">
+                <div class="envelope-meta">
+                  <div><strong>From:</strong> Providers Real Estate &lt;vipulproviders@gmail.com&gt;</div>
+                  <div><strong>Subject:</strong> <span id="pvSubjectText">—</span></div>
+                  <div><strong>Preview:</strong> <span id="pvPreheaderText">—</span></div>
+                </div>
+                <div class="envelope-screen" id="emailScreen">
+                  <div class="rendered-email" id="renderedEmailContainer">
+                    <!-- Live compiled email rendered here -->
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Saved Campaigns Library -->
+          <div class="saved-campaigns-section">
+            <h3 class="serif">Saved Email Campaigns & Drafts</h3>
+            <div class="saved-campaigns-grid" id="savedCampaignsList">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 6B: AD STUDIO (generate on-brand property ads) -->
+      <section class="view-panel hidden" id="view-ad-studio">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="serif">Ad Studio</h2>
+              <p class="panel-sub">Generate ready-to-post property ads in the website's navy-and-gold theme — Instagram, Story, Square and WhatsApp formats. Pick a listing to auto-fill the details, or type them yourself.</p>
+            </div>
+          </div>
+
+          <div class="ad-studio-layout">
+            <!-- Controls -->
+            <div class="ad-studio-controls">
+              <div class="form-field">
+                <label for="asListing">Property
+                  <select id="asListing">
+                    <option value="">Custom property (manual details)</option>
+                  </select>
+                </label>
+                <p class="field-hint">Choosing a listing auto-fills the headline, location, price, badge, highlights and photo.</p>
+              </div>
+
+              <div class="form-grid-2">
+                <div class="form-field">
+                  <label for="asTitle">Ad headline</label>
+                  <input type="text" id="asTitle" placeholder="Park-Facing 3 BHK Builder Floor" />
+                </div>
+                <div class="form-field">
+                  <label for="asLocation">Location</label>
+                  <input type="text" id="asLocation" placeholder="Greater Kailash I, South Delhi" />
+                </div>
+                <div class="form-field">
+                  <label for="asPrice">Price line</label>
+                  <input type="text" id="asPrice" placeholder="₹ 4.85 Cr" />
+                </div>
+                <div class="form-field">
+                  <label for="asBadge">Corner badge</label>
+                  <input type="text" id="asBadge" placeholder="For Sale · Exclusive · New" />
+                </div>
+              </div>
+
+              <div class="form-field">
+                <label for="asSpecs">Highlight chips (one per line, up to 3 shown)</label>
+                <textarea id="asSpecs" rows="3" placeholder="1,850 sq. ft.
+Italian marble
+Schindler lift"></textarea>
+              </div>
+
+              <div class="form-field">
+                <label>Photo <span class="field-hint">(pick from the listing, or upload — no external links)</span></label>
+                <div class="as-photo-grid" id="asPhotoGrid">
+                  <p class="empty">Select a listing or upload a photo below.</p>
+                </div>
+                <label class="as-upload-btn">
+                  <input type="file" id="asPhotoFile" accept="image/*" hidden />
+                  ⬆️ Upload a photo for the ad
+                </label>
+              </div>
+
+              <div class="form-grid-2">
+                <div class="form-field">
+                  <label for="asFormat">Format</label>
+                  <select id="asFormat">
+                    <option value="1080x1350">Instagram Post · 1080×1350</option>
+                    <option value="1080x1080">Square · 1080×1080</option>
+                    <option value="1080x1920">Story / Reel cover · 1080×1920</option>
+                    <option value="1200x628">WhatsApp / Facebook · 1200×628</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label for="asTheme">Theme</label>
+                  <select id="asTheme">
+                    <option value="navy">Midnight Navy &amp; Gold</option>
+                    <option value="ivory">Gallery White</option>
+                    <option value="noir">Editorial Noir</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-field">
+                <label for="asTagline">Tagline on the ad</label>
+                <input type="text" id="asTagline" value="Invest today. Live tomorrow." />
+              </div>
+
+              <label class="check-row">
+                <input type="checkbox" id="asShowContact" checked />
+                Show contact strip (Vipul Agnihotri · +91 98103 33886 · @providersrealestate)
+              </label>
+
+              <div class="ad-studio-actions">
+                <button type="button" class="solid-btn gold-btn" id="btnGenerateAd">✨ Generate Ad</button>
+                <button type="button" class="ghost-btn dark" id="btnDownloadAd" disabled>⬇️ Download PNG</button>
+              </div>
+              <div class="ad-studio-actions">
+                <button type="button" class="solid-btn" id="btnSaveAdCreative" disabled>💾 Save as Ad Creative (main picture)</button>
+                <button type="button" class="ghost-btn dark" id="btnSaveAdGallery" disabled>🖼️ Add to Photo Gallery</button>
+              </div>
+              <p class="form-msg" id="asMsg"></p>
+            </div>
+
+            <!-- Preview -->
+            <div class="ad-studio-preview">
+              <div class="ad-stage" id="adStage">
+                <canvas id="adCanvas" width="1080" height="1350" hidden></canvas>
+                <div class="ad-stage-empty" id="adStageEmpty">
+                  <div class="ase-icon">🖼️</div>
+                  <p>Fill in the details and press <strong>✨ Generate Ad</strong> —<br/>a full-resolution, ready-to-post ad appears here.</p>
+                </div>
+              </div>
+              <p class="field-hint center">Rendered at full resolution (1080px wide) — download it for Instagram, WhatsApp status, or print handouts.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION 7: FOLLOW-UP REMINDERS -->
+      <section class="view-panel hidden" id="view-reminders">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="serif">Follow-up Reminders & Deadlines</h2>
+              <p class="panel-sub">Listing marketing milestones, lead callbacks, and scheduled check-ins.</p>
+            </div>
+          </div>
+          <ul class="reminder-list" id="reminderList"></ul>
+        </div>
+      </section>
+
+      <!-- SECTION 8: PERSONAL SETTINGS (Account, Preferences & Activity) -->
+      <section class="view-panel hidden" id="view-settings">
+        <div class="settings-grid">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="serif">Account & Security</h2>
+                <p class="panel-sub">Your sign-in identity and password. Only visible to you.</p>
+              </div>
+            </div>
+            <div class="account-summary">
+              <div class="acct-row"><span>Signed in as</span><strong id="acctName">—</strong></div>
+              <div class="acct-row"><span>Username</span><strong id="acctUsername">—</strong></div>
+              <div class="acct-row"><span>Access level</span><strong id="acctRole">—</strong></div>
+            </div>
+            <form id="pwForm" class="pw-form">
+              <label>Current password
+                <input id="pwCurrent" type="password" placeholder="••••••••" autocomplete="current-password" required />
+              </label>
+              <label>New password (min. 8 characters)
+                <input id="pwNext" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required />
+              </label>
+              <button type="submit" class="solid-btn">Update Password</button>
+              <span class="form-msg" id="pwMsg"></span>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="serif">Workspace Preferences</h2>
+                <p class="panel-sub">Small comfort settings — saved on this device for your sign-in.</p>
+              </div>
+            </div>
+            <div class="prefs-list">
+              <label class="pref-row">
+                <input type="checkbox" id="prefCompact" />
+                <span><strong>Compact tables</strong><br><span class="field-hint">Tighter rows so more leads fit on screen.</span></span>
+              </label>
+              <label class="pref-row">
+                <input type="checkbox" id="prefConfirm" />
+                <span><strong>Confirm before deleting</strong><br><span class="field-hint">Ask “are you sure?” every time a lead, listing or visit is deleted.</span></span>
+              </label>
+              <label class="pref-row">
+                <span><strong>Open this view after sign-in</strong><br><span class="field-hint">Your personal landing page in the dashboard.</span></span>
+                <select id="prefLanding">
+                  <option value="overview">Overview</option>
+                  <option value="leads">Leads CRM</option>
+                  <option value="kanban">Deals Kanban</option>
+                  <option value="listings">Inventory & Listings</option>
+                </select>
+              </label>
+            </div>
+            <p class="form-msg" id="prefMsg"></p>
+          </div>
+
+          <div class="panel settings-activity">
+            <div class="panel-head">
+              <div>
+                <h2 class="serif">Activity Trail</h2>
+                <p class="panel-sub">Who changed what, and when — across leads, listings and campaigns.</p>
+              </div>
+              <div class="panel-head-actions">
+                <select id="activityScope">
+                  <option value="all">Whole team</option>
+                  <option value="mine">Only my actions</option>
+                </select>
+              </div>
+            </div>
+            <div class="tablewrap">
+              <table id="activityTable">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Team Member</th>
+                    <th>Entity</th>
+                    <th>Action</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- MODAL: ADD / EDIT LISTING -->
+    <div class="admin-modal" id="listingEditorModal" role="dialog" aria-hidden="true">
+      <div class="admin-modal-backdrop" id="listingModalBackdrop"></div>
+      <div class="admin-modal-box large">
+        <button class="admin-modal-close" id="closeListingModal">&times;</button>
+        <h3 class="serif modal-heading" id="editorTitle">Add New Property</h3>
+        <p class="modal-subheading">Upload your ad listing flyer, add property walkthrough photos, and configure listing details.</p>
+
+        <form id="listingForm" class="listing-form">
+          <input type="hidden" id="lf-id" />
+          <div class="lf-grid">
+            <label>Title *
+              <input id="lf-title" required placeholder="e.g. Premium Shop at M3M Urbana" />
+            </label>
+            <label>Location *
+              <input id="lf-location" required placeholder="e.g. Sector 67, Gurugram" />
+            </label>
+            <label>Property Type
+              <input id="lf-ptype" placeholder="Residential / Retail / Villa / Builder Floor" />
+            </label>
+            <label>Transaction Type
+              <select id="lf-ltype">
+                <option value="sale">Buy / For Sale</option>
+                <option value="rent">Rent / Lease</option>
+              </select>
+            </label>
+            <label>Price Display
+              <input id="lf-price" placeholder="e.g. ₹ 4.85 Cr or Price on request" />
+            </label>
+            <label>Badge / Tag
+              <input id="lf-badge" placeholder="e.g. For Sale, High Footfall, Exclusive" />
+            </label>
+
+            <!-- SECTION 1: PRIMARY AD LISTING FLYER -->
+            <div class="full ad-media-box">
+              <div class="ad-media-header">
+                <div>
+                  <strong class="ad-box-title">🖼️ Primary Ad Listing Flyer / Poster</strong>
+                  <p class="field-hint">The signature marketing flyer shown on listing cards and social handles (e.g. your M3M Urbana creative).</p>
+                </div>
+              </div>
+
+              <!-- Live Flyer Preview -->
+              <div id="adFlyerPreviewWrap" class="flyer-preview-wrap hidden">
+                <div class="flyer-img-frame">
+                  <img id="adFlyerPreviewImg" src="" alt="Ad Creative Poster" />
+                </div>
+                <div class="flyer-meta-bar">
+                  <span id="adFlyerPreviewName" class="flyer-filename"></span>
+                  <div class="flyer-actions">
+                    <button type="button" class="ghost-btn dark btn-xs" id="btnChangeFlyer">🔄 Replace Flyer</button>
+                    <button type="button" class="del-btn-pill" id="btnRemoveFlyer">✕ Remove</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Upload Button / Zone -->
+              <div class="upload-dropzone" id="adFlyerDropzone">
+                <input type="file" id="adFlyerFileInput" accept="image/*" class="hidden-file-input" />
+                <button type="button" class="solid-btn btn-sm" id="btnPickAdFlyer">📁 Upload Ad Listing Flyer (JPG / PNG / WebP)</button>
+                <span class="dropzone-text">Directly from your phone or computer · No external URLs needed</span>
+              </div>
+
+              <!-- Stored image path -->
+              <input type="hidden" id="lf-image" />
+            </div>
+
+            <!-- SECTION 2: PROPERTY PHOTO GALLERY -->
+            <div class="full ad-media-box">
+              <div class="ad-media-header">
+                <div>
+                  <strong class="ad-box-title">📸 Property Photo Gallery (Walkthrough Pictures)</strong>
+                  <p class="field-hint">When buyers click your ad listing, these pictures open in an interactive high-resolution gallery lightbox.</p>
+                </div>
+              </div>
+
+              <div class="gallery-upload-bar">
+                <input type="file" id="galleryFileInput" accept="image/*" multiple class="hidden-file-input" />
+                <button type="button" class="ghost-btn dark btn-sm" id="btnPickGallery">➕ Add Gallery Photos (Select Multiple)</button>
+                <span id="galleryUploadStatus" class="field-hint">Select one or several photos to build the property gallery.</span>
+              </div>
+
+              <!-- Interactive Gallery Grid -->
+              <div class="gallery-thumbs-grid" id="galleryThumbsGrid">
+                <!-- Dynamically populated thumbnail cards -->
+              </div>
+
+              <!-- Stored gallery data -->
+              <input type="hidden" id="lf-images" />
+              <p class="field-hint">⭐ Tap “Set as main” on any photo to choose the preview picture shown on the website card, the Kanban and your social ads.</p>
+            </div>
+
+            <!-- Specifications & Features -->
+            <label class="full">
+              Specifications (One bullet point per line)
+              <textarea id="lf-specs" rows="3" placeholder="A spacious size of 666 sq. ft.&#10;A corner unit which is two side open&#10;Ground floor · high pedestrian footfall"></textarea>
+            </label>
+            <label class="full">
+              Key Features & Amenities (One per line)
+              <textarea id="lf-features" rows="2" placeholder="Prime Sector 67 location&#10;High rental yield potential&#10;Ample visitor parking"></textarea>
+            </label>
+            <label class="full">
+              Curated Property Description
+              <textarea id="lf-desc" rows="3" placeholder="Write a refined description of the property, its location advantages, and investment highlights..."></textarea>
+            </label>
+
+            <!-- Marketing and Visibility -->
+            <label>Marketing Pipeline Stage
+              <select id="lf-mstage">
+                <option value="needs ad">needs ad</option>
+                <option value="ad ready">ad ready</option>
+                <option value="published">published</option>
+                <option value="negotiation">negotiation</option>
+                <option value="closed">closed</option>
+              </select>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="lf-published" />
+              <span><strong>Show Live on Website</strong> (Instant publication)</span>
+            </label>
+            <label class="full">
+              🎨 Editable Design Link (Canva / Google Drive / Figma - Optional Internal Reference)
+              <input id="lf-mlink" placeholder="e.g. https://www.canva.com/design/... or Google Drive folder link" />
+              <span class="field-hint">Save your editable Canva design or Google Drive link here so you or your marketing team can re-edit the creative in the future. Website visitors will never see this link.</span>
+            </label>
+            <label class="full">Marketing Notes
+              <textarea id="lf-mnote" rows="2" placeholder="Internal marketing notes (target audience, ad spend, creative version)..."></textarea>
+            </label>
+            <label>Follow-up Date
+              <input type="date" id="lf-fdate" />
+            </label>
+            <label class="full">Follow-up Note
+              <input id="lf-fnote" placeholder="Next step or reminder details..." />
+            </label>
+          </div>
+
+          <div class="lf-actions">
+            <button type="submit" class="solid-btn">Save Property</button>
+            <button type="button" class="ghost-btn dark" id="cancelListingModal">Cancel</button>
+          </div>
+          <p class="form-msg" id="lf-msg"></p>
+        </form>
+      </div>
+    </div>
+
+    <!-- MODAL: ADD NEW CRM LEAD -->
+    <div class="admin-modal" id="leadModal" role="dialog" aria-hidden="true">
+      <div class="admin-modal-backdrop" id="leadModalBackdrop"></div>
+      <div class="admin-modal-box">
+        <button class="admin-modal-close" id="closeLeadModal">&times;</button>
+        <h3 class="serif modal-heading">Add New Client Lead</h3>
+        <p class="modal-subheading">Record walk-in clients, phone inquiries, or private network referrals.</p>
+
+        <form id="newLeadForm">
+          <div class="lf-grid">
+            <label class="full">Client Full Name *
+              <input id="nl-name" required placeholder="e.g. Vikramaditya Singhania" />
+            </label>
+            <label>Mobile Number (10 digits)
+              <input id="nl-phone" type="tel" placeholder="e.g. 9810333886" />
+            </label>
+            <label>Email Address
+              <input id="nl-email" type="email" placeholder="e.g. client@domain.com" />
+            </label>
+            <label>Interest / Requirement
+              <input id="nl-interest" placeholder="e.g. 3 BHK South Delhi, Retail Gurugram" />
+            </label>
+            <label>Lead Source
+              <select id="nl-source">
+                <option value="Direct Call">Direct Call</option>
+                <option value="WhatsApp">WhatsApp</option>
+                <option value="Referral">Private Referral</option>
+                <option value="Walk-in">Walk-in</option>
+                <option value="Brevo Campaign">Brevo Campaign</option>
+              </select>
+            </label>
+            <label>Assigned Broker
+              <select id="nl-assigned">
+                <option value="Vipul">Vipul Agnihotri</option>
+                <option value="Charul">Charul</option>
+                <option value="Rohan">Rohan Agnihotri</option>
+              </select>
+            </label>
+            <label>Initial Pipeline Status
+              <select id="nl-status">
+                <option value="new">New Inquiry</option>
+                <option value="contacted">Contacted</option>
+                <option value="site visit">Site Visit Scheduled</option>
+                <option value="negotiation">Negotiation</option>
+              </select>
+            </label>
+            <label class="full">Internal Notes
+              <textarea id="nl-notes" rows="3" placeholder="Budget, timeline, specific requirements, preferred localities..."></textarea>
+            </label>
+          </div>
+          <div class="lf-actions">
+            <button type="submit" class="solid-btn">Add to CRM</button>
+            <button type="button" class="ghost-btn dark" id="cancelLeadModal">Cancel</button>
+          </div>
+          <p class="form-msg" id="nl-msg"></p>
+        </form>
+      </div>
+    </div>
+
+    <!-- MODAL: SCHEDULE SITE VISIT -->
+    <div class="admin-modal" id="visitModal" role="dialog" aria-hidden="true">
+      <div class="admin-modal-backdrop" id="visitModalBackdrop"></div>
+      <div class="admin-modal-box">
+        <button class="admin-modal-close" id="closeVisitModal">&times;</button>
+        <h3 class="serif modal-heading">Schedule Property Site Visit</h3>
+        <p class="modal-subheading">Coordinate in-person walkthrough with buyer and prepare keys/gate access.</p>
+
+        <form id="newVisitForm">
+          <div class="lf-grid">
+            <label class="full">Client Full Name *
+              <input id="nv-name" required placeholder="e.g. Rajesh Singhania" />
+            </label>
+            <label>Mobile Number
+              <input id="nv-phone" type="tel" placeholder="e.g. 9811234567" />
+            </label>
+            <label>Email Address
+              <input id="nv-email" type="email" placeholder="client@email.com" />
+            </label>
+            <label class="full">Target Property
+              <select id="nv-property">
+                <!-- Dynamically populated from listings -->
+              </select>
+            </label>
+            <label>Visit Date *
+              <input id="nv-date" type="date" required />
+            </label>
+            <label>Visit Time
+              <input id="nv-time" type="text" placeholder="e.g. 11:30 AM" />
+            </label>
+            <label class="full">Special Requests / Notes
+              <textarea id="nv-notes" rows="2" placeholder="e.g. Client needs stilt parking access; wants to inspect terrace and stilt lift."></textarea>
+            </label>
+          </div>
+          <div class="lf-actions">
+            <button type="submit" class="solid-btn">Confirm Site Visit</button>
+            <button type="button" class="ghost-btn dark" id="cancelVisitModal">Cancel</button>
+          </div>
+          <p class="form-msg" id="nv-msg"></p>
+        </form>
+      </div>
+    </div>
+
+    <!-- MODAL: SEND TEST EMAIL -->
+    <div class="admin-modal" id="brevoTestModal" role="dialog" aria-hidden="true">
+      <div class="admin-modal-backdrop" id="brevoModalBackdrop"></div>
+      <div class="admin-modal-box">
+        <button class="admin-modal-close" id="closeBrevoModal">&times;</button>
+        <h3 class="serif modal-heading">Send Test Email</h3>
+        <p class="modal-subheading">Sends the exact email design to your own inboxes first — check fonts, colours and mobile rendering before any real campaign.</p>
+
+        <form id="brevoTestForm">
+          <div class="lf-grid">
+            <label class="full">Recipients (comma-separated — send to multiple Gmail IDs at once)
+              <textarea id="bt-recipient" rows="2" required placeholder="charul@gmail.com, vipul@gmail.com"></textarea>
+            </label>
+            <div class="full">
+              <span class="field-hint">Quick add:</span>
+              <div class="quick-recipients" id="quickRecipients"></div>
+            </div>
+            <label class="full">Brevo API Key (optional if set on server)
+              <input id="bt-apikey" type="password" placeholder="xkeysib-..." />
+              <span class="field-hint">Remembered for this browser session only. Get your free key at brevo.com → SMTP & API.</span>
+            </label>
+          </div>
+          <div class="lf-actions">
+            <button type="submit" class="solid-btn" id="btnSendBrevoTest">Send Test Now</button>
+            <button type="button" class="ghost-btn dark" id="cancelBrevoModal">Close</button>
+          </div>
+          <p class="form-msg" id="bt-msg"></p>
+        </form>
+      </div>
+    </div>
+
+    <div class="admin-toast" id="adminToast" role="status"></div>
+
+    <script src="admin.js"></script>
+  </body>
+</html>

@@ -1,0 +1,37 @@
+# ═══════════════════════════════════════════════════════════════
+# Netlify configuration — Providers Real Estate
+# The public site is served statically from /public; every /api/*
+# request is routed to the single serverless function that runs
+# the Express app (Netlify Functions + Supabase Postgres).
+# ═══════════════════════════════════════════════════════════════
+
+[build]
+  command = "echo 'Static site — no build step'"
+  functions = "netlify/functions"
+  publish = "public"
+
+[functions]
+  node_bundler = "esbuild"
+
+# API → serverless function (the Express app)
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+  force = true
+
+# Pretty URLs for the static pages
+[[redirects]]
+  from = "/login"
+  to = "/login.html"
+  status = 200
+
+[[redirects]]
+  from = "/admin"
+  to = "/admin/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/admin/*"
+  to = "/admin/:splat"
+  status = 200

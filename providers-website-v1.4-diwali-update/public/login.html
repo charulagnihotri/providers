@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Team Login — Providers Real Estate</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&family=Jost:wght@300;400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: "Jost", "Segoe UI", sans-serif;
+        background: linear-gradient(145deg, #0b1830 0%, #152a4f 55%, #0f2140 100%);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .back {
+        position: fixed;
+        top: 20px;
+        left: 20px;
+        color: rgba(255, 255, 255, 0.75);
+        font-size: 13px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        text-decoration: none;
+      }
+      .back:hover {
+        color: #fff;
+      }
+      .card {
+        background: #fff;
+        width: min(420px, 100%);
+        padding: 48px 40px 40px;
+        text-align: center;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+      }
+      .brand {
+        font-family: "Playfair Display", serif;
+        font-weight: 600;
+        font-size: 30px;
+        color: #0f2140;
+      }
+      .sub {
+        font-size: 10px;
+        letter-spacing: 0.42em;
+        color: #5a6b85;
+        margin: 6px 0 12px;
+      }
+      .hint {
+        font-size: 14px;
+        color: #5a6b85;
+        line-height: 1.55;
+        margin-bottom: 28px;
+      }
+      input {
+        width: 100%;
+        border: 1px solid #dde3ec;
+        padding: 13px 14px;
+        font-family: inherit;
+        font-size: 15px;
+        margin-bottom: 14px;
+        outline: none;
+      }
+      input:focus {
+        border-color: #0f2140;
+      }
+      button {
+        width: 100%;
+        background: #0f2140;
+        color: #fff;
+        border: 0;
+        padding: 15px;
+        font-family: inherit;
+        font-size: 13px;
+        letter-spacing: 0.26em;
+        text-transform: uppercase;
+        cursor: pointer;
+        margin-top: 4px;
+      }
+      button:hover {
+        background: #1e3a66;
+      }
+      button:disabled {
+        opacity: 0.65;
+        cursor: wait;
+      }
+      .err {
+        color: #b4232a;
+        font-size: 13.5px;
+        margin-top: 14px;
+        min-height: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <a class="back" href="/">← Back to website</a>
+    <form class="card" id="f">
+      <div class="brand">Providers</div>
+      <div class="sub">TEAM DASHBOARD</div>
+      <p class="hint">
+        Sign in to view website enquiries, update lead status, and export
+        contacts. For family team use only.
+      </p>
+      <input
+        id="u"
+        placeholder="Username"
+        autocomplete="username"
+        required
+        autofocus
+      />
+      <input
+        id="p"
+        type="password"
+        placeholder="Password"
+        autocomplete="current-password"
+        required
+      />
+      <button type="submit" id="submitBtn">Sign in</button>
+      <p class="err" id="err"></p>
+    </form>
+    <script>
+      (async () => {
+        const me = await fetch("/api/admin/me");
+        if (me.ok) location.replace("/admin");
+      })();
+
+      document.getElementById("f").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const btn = document.getElementById("submitBtn");
+        const err = document.getElementById("err");
+        err.textContent = "";
+        btn.disabled = true;
+        try {
+          const r = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({
+              username: document.getElementById("u").value,
+              password: document.getElementById("p").value,
+            }),
+          });
+          const d = await r.json();
+          if (d.ok) location.href = "/admin";
+          else err.textContent = d.error || "Sign-in failed.";
+        } catch {
+          err.textContent = "Could not reach the server. Try again.";
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
