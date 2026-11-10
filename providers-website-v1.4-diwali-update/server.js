@@ -39,12 +39,20 @@ app.use(express.json({ limit: "5mb" }));
 const SESSION_DAYS = 30;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const UPLOAD_DIR = path.join(__dirname, "data", "uploads");
-/* Netlify's serverless filesystem is read-only (/var/task), so creating this
-   folder there crashes the whole function before it can answer ANY request
-   ("This function has crashed"). Local runs still create it — on Netlify,
-   photos go to Supabase Storage instead of this folder. */
-if (!process.env.NETLIFY) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+/* Local runs keep photos in data/uploads. Netlify's filesystem is READ-ONLY
+   (/var/task) — creating this folder there crashes the entire function before
+   it can answer any request ("This function has crashed"). Netlify does not
+   guarantee any specific env var inside the function runtime, so we no longer
+   create the folder at boot at all: it is created lazily by ensureUploadDir()
+   only when a photo is actually written locally, and failures are swallowed.
+   On Netlify photos live in Supabase Storage instead. */
+function ensureUploadDir() {
+  try {
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    return true;
+  } catch {
+    return false; // read-only filesystem (Netlify/Lambda) — cloud storage only
+  }
 }
 
 /* ---------- photo storage: Supabase Storage (cloud) or local disk ---------- */
@@ -53,7 +61,13 @@ const SUPABASE_SERVICE_KEY =
   process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || "";
 const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || "uploads";
 const USE_CLOUD_STORAGE = Boolean(SUPABASE_URL && SUPABASE_SERVICE_KEY);
-const RUNNING_ON_NETLIFY = Boolean(process.env.NETLIFY);
+/* Netlify sets NETLIFY during BUILDS but not reliably inside the function
+   runtime — there we are just an AWS Lambda container. Detect both, so the
+   error-handling paths behave correctly in production. */
+const RUNNING_ON_NETLIFY =
+  Boolean(process.env.NETLIFY) ||
+  Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+  Boolean(process.env.AWS_EXECUTION_ENV);
 
 /* The photo bucket must exist in Supabase before anything can be uploaded.
    We no longer depend on someone clicking "New bucket" in the dashboard:
@@ -88,10 +102,7 @@ async function ensureBucket() {
       storageNote =
         "key rejected — SUPABASE_SERVICE_KEY must be the service_role key (Supabase → Project Settings → API)";
     } else {
-      storageNote = `bucket check failed (${res.status}) ${detail.slice(
-        0,
-        110
-      )}`;
+      storageNote = `bucket check failed (${res.status}) ${detail.slice(0, 110)}`;
     }
   } catch (err) {
     storageNote = `not reachable (${err.message})`;
@@ -124,10 +135,7 @@ async function saveUpload(buffer, originalName, mimeType) {
     } catch (e) {
       netErr = e;
     }
-    if (
-      (!res || !res.ok) &&
-      (!res || res.status === 400 || res.status === 404)
-    ) {
+    if ((!res || !res.ok) && (!res || res.status === 400 || res.status === 404)) {
       // bucket probably missing → create it ourselves, then retry once
       if (await ensureBucket()) {
         try {
@@ -139,9 +147,7 @@ async function saveUpload(buffer, originalName, mimeType) {
       }
     }
     if (!res || !res.ok) {
-      const detail = netErr
-        ? String(netErr.message || netErr)
-        : await res.text().catch(() => "");
+      const detail = netErr ? String(netErr.message || netErr) : await res.text().catch(() => "");
       const hint = netErr
         ? "Fix: Supabase Storage is not reachable — check the internet connection and SUPABASE_URL in .env."
         : /not found|does not exist/i.test(detail)
@@ -149,20 +155,16 @@ async function saveUpload(buffer, originalName, mimeType) {
         : res.status === 401 || res.status === 403
         ? "Fix: SUPABASE_SERVICE_KEY in .env must be the service_role key (Supabase → Project Settings → API)."
         : "";
-      if (!RUNNING_ON_NETLIFY) {
+      if (!RUNNING_ON_NETLIFY && ensureUploadDir()) {
         // local machine: never block the family's work on storage setup
         fs.writeFileSync(path.join(UPLOAD_DIR, name), buffer);
         console.warn(
-          `⚠ Supabase Storage refused a photo (${
-            netErr ? "offline" : res.status
-          }) — saved to data/uploads on this Mac instead. ${hint}`
+          `⚠ Supabase Storage refused a photo (${netErr ? "offline" : res.status}) — saved to data/uploads on this Mac instead. ${hint}`
         );
         return { storedName: name, url: `/uploads/${name}` };
       }
       throw new Error(
-        `Photo storage failed (${
-          netErr ? "offline" : res.status
-        }). ${hint} ${detail.slice(0, 120)}`
+        `Photo storage failed (${netErr ? "offline" : res.status}). ${hint} ${detail.slice(0, 120)}`
       );
     }
     return {
@@ -170,8 +172,13 @@ async function saveUpload(buffer, originalName, mimeType) {
       url: `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${name}`,
     };
   }
-  fs.writeFileSync(path.join(UPLOAD_DIR, name), buffer);
-  return { storedName: name, url: `/uploads/${name}` };
+  if (ensureUploadDir()) {
+    fs.writeFileSync(path.join(UPLOAD_DIR, name), buffer);
+    return { storedName: name, url: `/uploads/${name}` };
+  }
+  throw new Error(
+    "Photo storage unavailable: local disk is read-only and Supabase Storage is not configured (add SUPABASE_URL + SUPABASE_SERVICE_KEY to .env)."
+  );
 }
 
 /* Best-effort delete from Supabase Storage (or disk when running locally) */
@@ -493,10 +500,10 @@ async function seedDefaultCampaigns() {
     `);
 
     await insCampaign.run(
-      "High-Footfall Commercial Retail at M3M Urbana",
-      "Commercial Investment Alert: Ground Floor Retail at M3M Urbana, Gurugram",
-      "Double-height corner showroom with high pedestrian footfall and strong rental yields",
-      `Dear {{First_Name}},
+    "High-Footfall Commercial Retail at M3M Urbana",
+    "Commercial Investment Alert: Ground Floor Retail at M3M Urbana, Gurugram",
+    "Double-height corner showroom with high pedestrian footfall and strong rental yields",
+    `Dear {{First_Name}},
 
 For clients seeking solid capital growth and robust rental yields in Gurugram, we have secured an exceptional commercial asset at M3M Urbana (Sector 67, Golf Course Extension Road).
 
@@ -512,8 +519,8 @@ To receive the comprehensive asset dossier or coordinate a site inspection, repl
 
 Best regards,
 Providers Real Estate Advisory Team`,
-      "Charul"
-    );
+    "Charul"
+  );
 
     await insCampaign.run(
       "A Quiet Word from Providers Real Estate",
@@ -561,9 +568,7 @@ async function seedTeamAccounts() {
     );
   }
   await db
-    .prepare(
-      `UPDATE users SET role = 'admin' WHERE username IN ('charul', 'vipul')`
-    )
+    .prepare(`UPDATE users SET role = 'admin' WHERE username IN ('charul', 'vipul')`)
     .run();
   await db
     .prepare(`UPDATE users SET role = 'viewer' WHERE username = 'rohan'`)
@@ -703,15 +708,11 @@ const CHAT_LOCALITIES_RX =
   /(defence colony|defense colony|greater kailash|vasant vihar|vasant kunj|anand niketan|shanti niketan|west end|golf links|jor bagh|green park|hauz khas|safdarjung|pamposh enclave|geetanjali|chanakyapuri|new friends colony|friends colony|chittaranjan park|cr park|kalkaji|malviya nagar|golf course road|golf course extension|golf course extn|sohna road|sohna|dlf phase\s*\d|cyber city|sushant lok|south city|mg road|sector\s*\d+)/i;
 
 function isAffirmativeAnswer(t) {
-  const s = String(t || "")
-    .trim()
-    .toLowerCase();
+  const s = String(t || "").trim().toLowerCase();
   return s.length <= 30 && CHAT_AFFIRM_RX.test(s) && !CHAT_TOPIC_RX.test(s);
 }
 function isNegativeAnswer(t) {
-  const s = String(t || "")
-    .trim()
-    .toLowerCase();
+  const s = String(t || "").trim().toLowerCase();
   return s.length <= 30 && CHAT_NEGATIVE_RX.test(s);
 }
 /* Strip [LISTING:id] markers and tidy punctuation left behind */
@@ -722,25 +723,21 @@ function cleanChatReply(s) {
     .replace(/[ \t]{2,}/g, " ")
     .trim();
 }
-const titleCase = (s) => String(s).replace(/\b\w/g, (c) => c.toUpperCase());
+const titleCase = (s) =>
+  String(s).replace(/\b\w/g, (c) => c.toUpperCase());
 
 function builtInRealEstateAI(messages, listings) {
   const lastUserMsg =
-    messages
-      .slice()
-      .reverse()
-      .find((m) => m.role === "user")?.content || "";
+    messages.slice().reverse().find((m) => m.role === "user")?.content || "";
   const t = lastUserMsg.toLowerCase().trim();
   const turnCount = messages.filter((m) => m.role === "user").length;
 
   const shop =
-    listings.find((l) =>
-      /m3m|urbana|retail/i.test(l.title + " " + l.location + " " + l.type)
-    ) || listings[0];
+    listings.find((l) => /m3m|urbana|retail/i.test(l.title + " " + l.location + " " + l.type)) ||
+    listings[0];
   const floor =
-    listings.find((l) =>
-      /floor|kailash|delhi/i.test(l.title + " " + l.location)
-    ) || listings[1];
+    listings.find((l) => /floor|kailash|delhi/i.test(l.title + " " + l.location)) ||
+    listings[1];
   const villa =
     listings.find((l) => /villa|dlf|pool/i.test(l.title + " " + l.location)) ||
     listings[2];
@@ -756,10 +753,7 @@ function builtInRealEstateAI(messages, listings) {
   }
 
   // 0b. Bare yes/ok with no property topic — guide instead of guessing
-  if (
-    /^(yes|yep|yeah|ya|haan|hanji|ok|okay|sure)\b/i.test(t) &&
-    t.length <= 12
-  ) {
+  if (/^(yes|yep|yeah|ya|haan|hanji|ok|okay|sure)\b/i.test(t) && t.length <= 12) {
     return {
       reply:
         "Lovely. Would you like me to walk you through our commercial retail at M3M Urbana, the South Delhi builder floors, or the DLF Phase 1 villa? I can also arrange a private consultation with Vipul Agnihotri.",
@@ -778,9 +772,7 @@ function builtInRealEstateAI(messages, listings) {
 
   // 0d. Gratitude / farewell
   if (
-    /^(thanks|thank you|thank u|dhanyavad|shukriya|bye|goodbye|good night)\b/i.test(
-      t
-    ) &&
+    /^(thanks|thank you|thank u|dhanyavad|shukriya|bye|goodbye|good night)\b/i.test(t) &&
     t.length <= 40
   ) {
     return {
@@ -970,24 +962,42 @@ let geminiFailureLogged = false;
 function warnGeminiOnce(msg) {
   if (geminiFailureLogged) return;
   geminiFailureLogged = true;
-  console.warn(
-    `[Gemini] ${msg} The built-in concierge brain takes over automatically.`
-  );
+  console.warn(`[Gemini] ${msg} The built-in concierge brain takes over automatically.`);
+}
+
+/* Gemini works with BOTH Google key formats today:
+   • "AIza…"  → Google AI Studio key      → generativelanguage.googleapis.com
+   • "AQ.…"   → Vertex AI express key     → aiplatform.googleapis.com
+                (the newer format Google hands out — starts with "AQ.")
+   Both endpoints speak the same request/response shape; only the URL and
+   auth header differ. Returns null for any other key format. */
+function geminiEndpointConfig() {
+  const key = process.env.GEMINI_API_KEY || "";
+  if (key.startsWith("AIza")) {
+    return {
+      url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(key)}`,
+      headers: {},
+      kind: "Google AI Studio",
+    };
+  }
+  if (key.startsWith("AQ.")) {
+    return {
+      url: "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:generateContent",
+      headers: { "x-goog-api-key": key },
+      kind: "Vertex AI express",
+    };
+  }
+  return null;
 }
 
 async function geminiChatIfConfigured(messages, listings) {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) return null;
-  // Keys from Google Cloud / Vertex AI Express start with "AQ." and are NOT
-  // valid here. Only Google AI Studio keys (starting with "AIza") work with
-  // this endpoint — skip silently-fast instead of wasting a request.
-  if (!key.startsWith("AIza")) {
-    warnGeminiOnce(
-      `GEMINI_API_KEY format looks wrong (starts with \"${key.slice(
-        0,
-        3
-      )}\"). Free keys live at aistudio.google.com/apikey and start with \"AIza\".`
-    );
+  const cfg = geminiEndpointConfig();
+  if (!cfg) {
+    const key = process.env.GEMINI_API_KEY || "";
+    if (key)
+      warnGeminiOnce(
+        `GEMINI_API_KEY format looks wrong (starts with "${key.slice(0, 3)}"). Google Gemini keys start with "AIza" (AI Studio) or "AQ." (Vertex AI express).`
+      );
     return null;
   }
 
@@ -1043,13 +1053,10 @@ Conversation rules (follow strictly):
     });
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(
-    key
-  )}`;
   try {
-    const r = await fetch(url, {
+    const r = await fetch(cfg.url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...cfg.headers },
       body: JSON.stringify({
         contents,
         generationConfig: { temperature: 0.4, maxOutputTokens: 350 },
@@ -1058,12 +1065,10 @@ Conversation rules (follow strictly):
     if (!r.ok) {
       if (r.status === 400) {
         warnGeminiOnce(
-          `HTTP 400 — the GEMINI_API_KEY in your .env looks invalid. Re-copy it from Google AI Studio (it should start with "AIza").`
+          `HTTP 400 — the GEMINI_API_KEY in your .env looks invalid. Re-copy it (${cfg.kind} keys start with "${cfg.kind === "Vertex AI express" ? "AQ." : "AIza"}").`
         );
       } else if (r.status === 403) {
-        warnGeminiOnce(
-          `HTTP 403 — key rejected. Generate a fresh key in Google AI Studio.`
-        );
+        warnGeminiOnce(`HTTP 403 — key rejected. Generate a fresh key in Google AI Studio or your Google Cloud console.`);
       } else if (r.status === 429) {
         geminiFailureLogged = false; // quota resets — log again on the next burst
         warnGeminiOnce(`HTTP 429 — free-tier quota exhausted for now.`);
@@ -1078,11 +1083,7 @@ Conversation rules (follow strictly):
     return reply.trim() || null;
   } catch (err) {
     warnGeminiOnce(
-      `Could not reach the Gemini API (${
-        err && err.cause
-          ? err.cause.code || err.cause.message
-          : err.message || "network error"
-      }).`
+      `Could not reach the Gemini API (${err && err.cause ? err.cause.code || err.cause.message : err.message || "network error"}).`
     );
     return null;
   }
@@ -1103,22 +1104,14 @@ app.post("/api/chat", async (req, res) => {
   ).map(rowToPublicListing);
 
   const lastUserMsg =
-    messages
-      .slice()
-      .reverse()
-      .find((m) => m.role === "user")?.content || "";
+    messages.slice().reverse().find((m) => m.role === "user")?.content || "";
   const prevAssistantMsg =
-    messages
-      .slice()
-      .reverse()
-      .find((m) => m.role === "assistant")?.content || "";
+    messages.slice().reverse().find((m) => m.role === "assistant")?.content ||
+    "";
 
   /* Deterministic conversation-flow intents — these MUST work even if the
      LLM is down, so lead capture never breaks. */
-  if (
-    isAffirmativeAnswer(lastUserMsg) &&
-    CHAT_OFFER_RX.test(prevAssistantMsg)
-  ) {
+  if (isAffirmativeAnswer(lastUserMsg) && CHAT_OFFER_RX.test(prevAssistantMsg)) {
     return res.json({
       ok: true,
       reply:
@@ -1181,11 +1174,7 @@ function ruleBasedRecommend(answers, listings) {
 
     // Intent match
     if (want.includes("retail") || want.includes("invest")) {
-      if (
-        l.type.toLowerCase().includes("retail") ||
-        l.type.toLowerCase().includes("commercial")
-      )
-        score += 25;
+      if (l.type.toLowerCase().includes("retail") || l.type.toLowerCase().includes("commercial")) score += 25;
     }
     if (want.includes("buy") || want.includes("home")) {
       if (l.type.toLowerCase().includes("residential")) score += 20;
@@ -1193,35 +1182,20 @@ function ruleBasedRecommend(answers, listings) {
     if (want.includes("rent") && l.status === "rent") score += 25;
 
     // Format match
-    if (
-      kind.includes("retail") &&
-      (l.type.toLowerCase().includes("retail") ||
-        l.type.toLowerCase().includes("commercial"))
-    )
-      score += 30;
+    if (kind.includes("retail") && (l.type.toLowerCase().includes("retail") || l.type.toLowerCase().includes("commercial"))) score += 30;
     if (kind.includes("villa") && /villa/i.test(l.title)) score += 30;
     if (kind.includes("floor") && /floor/i.test(l.title)) score += 30;
 
     // Area match
-    if (area.includes("delhi") && l.location.toLowerCase().includes("delhi"))
-      score += 20;
-    if (area.includes("guru") && /guru|ggn|gurgaon/i.test(l.location))
-      score += 20;
+    if (area.includes("delhi") && l.location.toLowerCase().includes("delhi")) score += 20;
+    if (area.includes("guru") && /guru|ggn|gurgaon/i.test(l.location)) score += 20;
     if (area.includes("any")) score += 10;
 
     // Budget match
-    if (
-      budget.includes("retail") ||
-      budget.includes("1.5") ||
-      budget.includes("2")
-    ) {
+    if (budget.includes("retail") || budget.includes("1.5") || budget.includes("2")) {
       if (l.type.toLowerCase().includes("retail")) score += 20;
     }
-    if (
-      budget.includes("floor") ||
-      budget.includes("4") ||
-      budget.includes("5")
-    ) {
+    if (budget.includes("floor") || budget.includes("4") || budget.includes("5")) {
       if (/floor/i.test(l.title)) score += 20;
     }
     if (budget.includes("villa") || budget.includes("10")) {
@@ -1236,10 +1210,7 @@ function ruleBasedRecommend(answers, listings) {
 
   const areas =
     area === "any"
-      ? [
-          "South Delhi (Greater Kailash, Def Col)",
-          "Gurugram (Golf Course Rd, Sector 67)",
-        ]
+      ? ["South Delhi (Greater Kailash, Def Col)", "Gurugram (Golf Course Rd, Sector 67)"]
       : area.includes("delhi")
       ? ["Greater Kailash 1 & 2", "Defence Colony", "Vasant Vihar"]
       : ["Sector 67 High Street", "Golf Course Road", "DLF Phase 1–5"];
@@ -1278,15 +1249,13 @@ app.post("/api/explorer/recommend", async (req, res) => {
            VALUES (?, ?, ?, ?, ?, ?)`
         )
         .run(
-          String(answers.name || "Explorer User").slice(0, 120),
-          answers.phone ? digits(answers.phone) : "",
-          String(answers.email || "").slice(0, 160),
-          `AI Match: ${answers.propertyKind || "Property"} in ${
-            answers.area || "Any"
-          }`,
-          `Quiz preferences: Intent=${answers.intent}, Type=${answers.propertyKind}, Area=${answers.area}, Budget=${answers.budget}`,
-          "AI Explorer"
-        );
+        String(answers.name || "Explorer User").slice(0, 120),
+        answers.phone ? digits(answers.phone) : "",
+        String(answers.email || "").slice(0, 160),
+        `AI Match: ${answers.propertyKind || "Property"} in ${answers.area || "Any"}`,
+        `Quiz preferences: Intent=${answers.intent}, Type=${answers.propertyKind}, Area=${answers.area}, Budget=${answers.budget}`,
+        "AI Explorer"
+      );
     }
   } catch {
     /* ignore */
@@ -1297,7 +1266,9 @@ app.post("/api/explorer/recommend", async (req, res) => {
 
 /* ---------- admin: overview & stats ---------- */
 app.get("/api/admin/stats", requireAuth, async (req, res) => {
-  const totalLeads = (await db.prepare("SELECT COUNT(*) c FROM leads").get()).c;
+  const totalLeads = (
+    await db.prepare("SELECT COUNT(*) c FROM leads").get()
+  ).c;
   const monthLeads = (
     await db
       .prepare(`SELECT COUNT(*) c FROM leads WHERE created_at >= ?`)
@@ -1344,7 +1315,9 @@ app.get("/api/admin/stats", requireAuth, async (req, res) => {
 
 /* ---------- admin: leads CRM ---------- */
 app.get("/api/admin/leads", requireAuth, async (req, res) => {
-  const leads = await db.prepare("SELECT * FROM leads ORDER BY id DESC").all();
+  const leads = await db
+    .prepare("SELECT * FROM leads ORDER BY id DESC")
+    .all();
   res.json({ ok: true, leads });
 });
 
@@ -1361,13 +1334,9 @@ app.post("/api/admin/leads", requireAuth, requireEditor, async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
-      String(b.name || "")
-        .trim()
-        .slice(0, 120),
+      String(b.name || "").trim().slice(0, 120),
       b.phone ? digits(b.phone) : "",
-      String(b.email || "")
-        .trim()
-        .slice(0, 160),
+      String(b.email || "").trim().slice(0, 160),
       String(b.interest || "General").slice(0, 60),
       String(b.message || "").slice(0, 2000),
       String(b.source || "Manual Entry").slice(0, 40),
@@ -1382,65 +1351,55 @@ app.post("/api/admin/leads", requireAuth, requireEditor, async (req, res) => {
   res.json({ ok: true, id: r.lastInsertRowid });
 });
 
-app.patch(
-  "/api/admin/leads/:id",
-  requireAuth,
-  requireEditor,
-  async (req, res) => {
-    const lead = await db
-      .prepare("SELECT id FROM leads WHERE id = ?")
-      .get(req.params.id);
-    if (!lead)
-      return res.status(404).json({ ok: false, error: "Lead not found." });
+app.patch("/api/admin/leads/:id", requireAuth, requireEditor, async (req, res) => {
+  const lead = await db
+    .prepare("SELECT id FROM leads WHERE id = ?")
+    .get(req.params.id);
+  if (!lead)
+    return res.status(404).json({ ok: false, error: "Lead not found." });
 
-    const b = req.body || {};
-    const fields = [];
-    const vals = [];
+  const b = req.body || {};
+  const fields = [];
+  const vals = [];
 
-    if (b.status !== undefined) {
-      if (!LEAD_STATUSES.includes(b.status))
-        return res.status(400).json({ ok: false, error: "Invalid status." });
-      fields.push("status = ?");
-      vals.push(b.status);
-      logActivity(req.user, "lead", lead.id, "status_changed", {
-        status: b.status,
-      });
-    }
-    if (b.notes !== undefined) {
-      fields.push("notes = ?");
-      vals.push(String(b.notes).slice(0, 2000));
-      logActivity(req.user, "lead", lead.id, "notes_updated", {});
-    }
-    if (b.assigned_to !== undefined) {
-      fields.push("assigned_to = ?");
-      vals.push(String(b.assigned_to).slice(0, 60));
-    }
-    if (b.interest !== undefined) {
-      fields.push("interest = ?");
-      vals.push(String(b.interest).slice(0, 60));
-    }
-
-    if (!fields.length)
-      return res.status(400).json({ ok: false, error: "Nothing to update." });
-
-    vals.push(lead.id);
-    await db
-      .prepare(`UPDATE leads SET ${fields.join(", ")} WHERE id = ?`)
-      .run(...vals);
-    res.json({ ok: true });
+  if (b.status !== undefined) {
+    if (!LEAD_STATUSES.includes(b.status))
+      return res.status(400).json({ ok: false, error: "Invalid status." });
+    fields.push("status = ?");
+    vals.push(b.status);
+    logActivity(req.user, "lead", lead.id, "status_changed", {
+      status: b.status,
+    });
   }
-);
-
-app.delete(
-  "/api/admin/leads/:id",
-  requireAuth,
-  requireEditor,
-  async (req, res) => {
-    await db.prepare("DELETE FROM leads WHERE id = ?").run(req.params.id);
-    logActivity(req.user, "lead", Number(req.params.id), "deleted", {});
-    res.json({ ok: true });
+  if (b.notes !== undefined) {
+    fields.push("notes = ?");
+    vals.push(String(b.notes).slice(0, 2000));
+    logActivity(req.user, "lead", lead.id, "notes_updated", {});
   }
-);
+  if (b.assigned_to !== undefined) {
+    fields.push("assigned_to = ?");
+    vals.push(String(b.assigned_to).slice(0, 60));
+  }
+  if (b.interest !== undefined) {
+    fields.push("interest = ?");
+    vals.push(String(b.interest).slice(0, 60));
+  }
+
+  if (!fields.length)
+    return res.status(400).json({ ok: false, error: "Nothing to update." });
+
+  vals.push(lead.id);
+  await db
+    .prepare(`UPDATE leads SET ${fields.join(", ")} WHERE id = ?`)
+    .run(...vals);
+  res.json({ ok: true });
+});
+
+app.delete("/api/admin/leads/:id", requireAuth, requireEditor, async (req, res) => {
+  await db.prepare("DELETE FROM leads WHERE id = ?").run(req.params.id);
+  logActivity(req.user, "lead", Number(req.params.id), "deleted", {});
+  res.json({ ok: true });
+});
 
 app.get("/api/admin/leads.csv", requireAuth, async (req, res) => {
   const leads = await db.prepare("SELECT * FROM leads ORDER BY id DESC").all();
@@ -1511,213 +1470,194 @@ app.get("/api/admin/listings", requireAuth, async (req, res) => {
   res.json({ ok: true, listings });
 });
 
-app.post(
-  "/api/admin/listings",
-  requireAuth,
-  requireEditor,
-  async (req, res) => {
-    const b = req.body || {};
-    if (!String(b.title || "").trim()) {
-      return res.status(400).json({ ok: false, error: "Title is required." });
-    }
+app.post("/api/admin/listings", requireAuth, requireEditor, async (req, res) => {
+  const b = req.body || {};
+  if (!String(b.title || "").trim()) {
+    return res.status(400).json({ ok: false, error: "Title is required." });
+  }
 
-    const specs = Array.isArray(b.specs)
-      ? b.specs
-      : String(b.specs || "")
-          .split("\n")
-          .map((s) => s.trim())
-          .filter(Boolean);
+  const specs = Array.isArray(b.specs)
+    ? b.specs
+    : String(b.specs || "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
 
-    const images = Array.isArray(b.images)
-      ? b.images
-      : String(b.images || "")
-          .split(/[\n,]/)
-          .map((s) => s.trim())
-          .filter(Boolean);
+  const images = Array.isArray(b.images)
+    ? b.images
+    : String(b.images || "")
+        .split(/[\n,]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
 
-    const features = Array.isArray(b.features)
-      ? b.features
-      : String(b.features || "")
-          .split("\n")
-          .map((s) => s.trim())
-          .filter(Boolean);
+  const features = Array.isArray(b.features)
+    ? b.features
+    : String(b.features || "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
 
-    const mainImage = String(
-      b.image_url || (images.length ? images[0] : "")
-    ).trim();
-    const marketing = MARKETING_STAGES.includes(b.marketing_status)
-      ? b.marketing_status
-      : "needs ad";
+  const mainImage = String(b.image_url || (images.length ? images[0] : "")).trim();
+  const marketing = MARKETING_STAGES.includes(b.marketing_status)
+    ? b.marketing_status
+    : "needs ad";
 
-    const published =
-      b.published !== undefined
-        ? b.published
-          ? 1
-          : 0
-        : marketing === "published"
+  const published =
+    b.published !== undefined
+      ? b.published
         ? 1
-        : 0;
+        : 0
+      : marketing === "published"
+      ? 1
+      : 0;
 
-    const r = await db
-      .prepare(
-        `INSERT INTO listings (
+  const r = await db
+    .prepare(
+      `INSERT INTO listings (
         title, location, property_type, listing_type, badge, price, specs_json,
         image_url, images_json, video_url, description, features_json,
         published, marketing_status, marketing_note, marketing_link,
         follow_up_at, follow_up_note, sort_order
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        String(b.title).trim().slice(0, 200),
-        String(b.location || "").slice(0, 160),
-        String(b.property_type || "Residential").slice(0, 60),
-        b.listing_type === "rent" ? "rent" : "sale",
-        String(b.badge || "For Sale").slice(0, 60),
-        String(b.price || "Price on request").slice(0, 80),
-        JSON.stringify(specs),
-        mainImage.slice(0, 500),
-        JSON.stringify(images),
-        "",
-        String(b.description || "").slice(0, 5000),
-        JSON.stringify(features),
-        published,
-        marketing,
-        String(b.marketing_note || "").slice(0, 2000),
-        String(b.marketing_link || "").slice(0, 500),
-        b.follow_up_at || null,
-        String(b.follow_up_note || "").slice(0, 500),
-        Number(b.sort_order) || 0
-      );
+    )
+    .run(
+      String(b.title).trim().slice(0, 200),
+      String(b.location || "").slice(0, 160),
+      String(b.property_type || "Residential").slice(0, 60),
+      b.listing_type === "rent" ? "rent" : "sale",
+      String(b.badge || "For Sale").slice(0, 60),
+      String(b.price || "Price on request").slice(0, 80),
+      JSON.stringify(specs),
+      mainImage.slice(0, 500),
+      JSON.stringify(images),
+      "",
+      String(b.description || "").slice(0, 5000),
+      JSON.stringify(features),
+      published,
+      marketing,
+      String(b.marketing_note || "").slice(0, 2000),
+      String(b.marketing_link || "").slice(0, 500),
+      b.follow_up_at || null,
+      String(b.follow_up_note || "").slice(0, 500),
+      Number(b.sort_order) || 0
+    );
 
-    logActivity(req.user, "listing", r.lastInsertRowid, "created", {
-      title: b.title,
-    });
-    res.json({ ok: true, id: r.lastInsertRowid });
+  logActivity(req.user, "listing", r.lastInsertRowid, "created", {
+    title: b.title,
+  });
+  res.json({ ok: true, id: r.lastInsertRowid });
+});
+
+app.patch("/api/admin/listings/:id", requireAuth, requireEditor, async (req, res) => {
+  const row = await db
+    .prepare("SELECT * FROM listings WHERE id = ?")
+    .get(req.params.id);
+  if (!row)
+    return res.status(404).json({ ok: false, error: "Listing not found." });
+
+  const b = req.body || {};
+  const fields = [];
+  const vals = [];
+  const set = (col, val) => {
+    fields.push(`${col} = ?`);
+    vals.push(val);
+  };
+
+  if (b.title !== undefined) set("title", String(b.title).slice(0, 200));
+  if (b.location !== undefined)
+    set("location", String(b.location).slice(0, 160));
+  if (b.property_type !== undefined)
+    set("property_type", String(b.property_type).slice(0, 60));
+  if (b.listing_type !== undefined)
+    set("listing_type", b.listing_type === "rent" ? "rent" : "sale");
+  if (b.badge !== undefined) set("badge", String(b.badge).slice(0, 60));
+  if (b.price !== undefined) set("price", String(b.price).slice(0, 80));
+  if (b.image_url !== undefined)
+    set("image_url", String(b.image_url).slice(0, 500));
+  if (b.description !== undefined)
+    set("description", String(b.description).slice(0, 5000));
+
+  if (b.images !== undefined) {
+    const images = Array.isArray(b.images)
+      ? b.images
+      : String(b.images)
+          .split(/[\n,]/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+    set("images_json", JSON.stringify(images));
+    if (!b.image_url && images.length) {
+      set("image_url", images[0]);
+    }
   }
-);
 
-app.patch(
-  "/api/admin/listings/:id",
-  requireAuth,
-  requireEditor,
-  async (req, res) => {
-    const row = await db
-      .prepare("SELECT * FROM listings WHERE id = ?")
-      .get(req.params.id);
-    if (!row)
-      return res.status(404).json({ ok: false, error: "Listing not found." });
-
-    const b = req.body || {};
-    const fields = [];
-    const vals = [];
-    const set = (col, val) => {
-      fields.push(`${col} = ?`);
-      vals.push(val);
-    };
-
-    if (b.title !== undefined) set("title", String(b.title).slice(0, 200));
-    if (b.location !== undefined)
-      set("location", String(b.location).slice(0, 160));
-    if (b.property_type !== undefined)
-      set("property_type", String(b.property_type).slice(0, 60));
-    if (b.listing_type !== undefined)
-      set("listing_type", b.listing_type === "rent" ? "rent" : "sale");
-    if (b.badge !== undefined) set("badge", String(b.badge).slice(0, 60));
-    if (b.price !== undefined) set("price", String(b.price).slice(0, 80));
-    if (b.image_url !== undefined)
-      set("image_url", String(b.image_url).slice(0, 500));
-    if (b.description !== undefined)
-      set("description", String(b.description).slice(0, 5000));
-
-    if (b.images !== undefined) {
-      const images = Array.isArray(b.images)
-        ? b.images
-        : String(b.images)
-            .split(/[\n,]/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-      set("images_json", JSON.stringify(images));
-      if (!b.image_url && images.length) {
-        set("image_url", images[0]);
-      }
-    }
-
-    if (b.specs !== undefined) {
-      const specs = Array.isArray(b.specs)
-        ? b.specs
-        : String(b.specs)
-            .split("\n")
-            .map((s) => s.trim())
-            .filter(Boolean);
-      set("specs_json", JSON.stringify(specs));
-    }
-
-    if (b.features !== undefined) {
-      const features = Array.isArray(b.features)
-        ? b.features
-        : String(b.features)
-            .split("\n")
-            .map((s) => s.trim())
-            .filter(Boolean);
-      set("features_json", JSON.stringify(features));
-    }
-
-    if (b.published !== undefined) set("published", b.published ? 1 : 0);
-
-    if (b.marketing_status !== undefined) {
-      if (!MARKETING_STAGES.includes(b.marketing_status)) {
-        return res.status(400).json({ ok: false, error: "Invalid stage." });
-      }
-      set("marketing_status", b.marketing_status);
-      if (b.published === undefined) {
-        set("published", b.marketing_status === "published" ? 1 : 0);
-      }
-    }
-
-    if (b.marketing_note !== undefined)
-      set("marketing_note", String(b.marketing_note).slice(0, 2000));
-    if (b.marketing_link !== undefined)
-      set("marketing_link", String(b.marketing_link).slice(0, 500));
-    if (b.follow_up_at !== undefined)
-      set("follow_up_at", b.follow_up_at || null);
-    if (b.follow_up_note !== undefined)
-      set("follow_up_note", String(b.follow_up_note).slice(0, 500));
-    if (b.sort_order !== undefined)
-      set("sort_order", Number(b.sort_order) || 0);
-
-    if (!fields.length)
-      return res.status(400).json({ ok: false, error: "Nothing to update." });
-
-    fields.push(`updated_at = ?`);
-    vals.push(nowStr());
-    vals.push(row.id);
-    await db
-      .prepare(`UPDATE listings SET ${fields.join(", ")} WHERE id = ?`)
-      .run(...vals);
-    logActivity(req.user, "listing", row.id, "updated", b);
-    res.json({ ok: true });
+  if (b.specs !== undefined) {
+    const specs = Array.isArray(b.specs)
+      ? b.specs
+      : String(b.specs)
+          .split("\n")
+          .map((s) => s.trim())
+          .filter(Boolean);
+    set("specs_json", JSON.stringify(specs));
   }
-);
 
-app.delete(
-  "/api/admin/listings/:id",
-  requireAuth,
-  requireEditor,
-  async (req, res) => {
-    const assets = await db
-      .prepare("SELECT stored_name FROM listing_assets WHERE listing_id = ?")
-      .all(req.params.id);
-    for (const a of assets) {
-      await deleteStoredFile(a.stored_name);
-    }
-    await db
-      .prepare("DELETE FROM listing_assets WHERE listing_id = ?")
-      .run(req.params.id);
-    await db.prepare("DELETE FROM listings WHERE id = ?").run(req.params.id);
-    logActivity(req.user, "listing", Number(req.params.id), "deleted", {});
-    res.json({ ok: true });
+  if (b.features !== undefined) {
+    const features = Array.isArray(b.features)
+      ? b.features
+      : String(b.features)
+          .split("\n")
+          .map((s) => s.trim())
+          .filter(Boolean);
+    set("features_json", JSON.stringify(features));
   }
-);
+
+  if (b.published !== undefined) set("published", b.published ? 1 : 0);
+
+  if (b.marketing_status !== undefined) {
+    if (!MARKETING_STAGES.includes(b.marketing_status)) {
+      return res.status(400).json({ ok: false, error: "Invalid stage." });
+    }
+    set("marketing_status", b.marketing_status);
+    if (b.published === undefined) {
+      set("published", b.marketing_status === "published" ? 1 : 0);
+    }
+  }
+
+  if (b.marketing_note !== undefined)
+    set("marketing_note", String(b.marketing_note).slice(0, 2000));
+  if (b.marketing_link !== undefined)
+    set("marketing_link", String(b.marketing_link).slice(0, 500));
+  if (b.follow_up_at !== undefined) set("follow_up_at", b.follow_up_at || null);
+  if (b.follow_up_note !== undefined)
+    set("follow_up_note", String(b.follow_up_note).slice(0, 500));
+  if (b.sort_order !== undefined) set("sort_order", Number(b.sort_order) || 0);
+
+  if (!fields.length)
+    return res.status(400).json({ ok: false, error: "Nothing to update." });
+
+  fields.push(`updated_at = ?`);
+  vals.push(nowStr());
+  vals.push(row.id);
+  await db
+    .prepare(`UPDATE listings SET ${fields.join(", ")} WHERE id = ?`)
+    .run(...vals);
+  logActivity(req.user, "listing", row.id, "updated", b);
+  res.json({ ok: true });
+});
+
+app.delete("/api/admin/listings/:id", requireAuth, requireEditor, async (req, res) => {
+  const assets = await db
+    .prepare("SELECT stored_name FROM listing_assets WHERE listing_id = ?")
+    .all(req.params.id);
+  for (const a of assets) {
+    await deleteStoredFile(a.stored_name);
+  }
+  await db
+    .prepare("DELETE FROM listing_assets WHERE listing_id = ?")
+    .run(req.params.id);
+  await db.prepare("DELETE FROM listings WHERE id = ?").run(req.params.id);
+  logActivity(req.user, "listing", Number(req.params.id), "deleted", {});
+  res.json({ ok: true });
+});
 
 /* ---------- admin: direct media upload ---------- */
 app.post(
@@ -1788,41 +1728,36 @@ app.get("/api/admin/site-visits", requireAuth, async (req, res) => {
   res.json({ ok: true, visits });
 });
 
-app.post(
-  "/api/admin/site-visits",
-  requireAuth,
-  requireEditor,
-  async (req, res) => {
-    const b = req.body || {};
-    if (!b.client_name || !b.visit_date) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Client name and visit date are required." });
-    }
-
-    const r = await db
-      .prepare(
-        `INSERT INTO site_visits (client_name, client_phone, client_email, property_title, visit_date, visit_time, status, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        String(b.client_name).trim().slice(0, 120),
-        b.client_phone ? digits(b.client_phone) : "",
-        String(b.client_email || "").slice(0, 160),
-        String(b.property_title || "").slice(0, 200),
-        String(b.visit_date).slice(0, 20),
-        String(b.visit_time || "11:00 AM").slice(0, 30),
-        b.status || "scheduled",
-        String(b.notes || "").slice(0, 2000)
-      );
-
-    logActivity(req.user, "visit", r.lastInsertRowid, "scheduled", {
-      client: b.client_name,
-      date: b.visit_date,
-    });
-    res.json({ ok: true, id: r.lastInsertRowid });
+app.post("/api/admin/site-visits", requireAuth, requireEditor, async (req, res) => {
+  const b = req.body || {};
+  if (!b.client_name || !b.visit_date) {
+    return res
+      .status(400)
+      .json({ ok: false, error: "Client name and visit date are required." });
   }
-);
+
+  const r = await db
+    .prepare(
+      `INSERT INTO site_visits (client_name, client_phone, client_email, property_title, visit_date, visit_time, status, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      String(b.client_name).trim().slice(0, 120),
+      b.client_phone ? digits(b.client_phone) : "",
+      String(b.client_email || "").slice(0, 160),
+      String(b.property_title || "").slice(0, 200),
+      String(b.visit_date).slice(0, 20),
+      String(b.visit_time || "11:00 AM").slice(0, 30),
+      b.status || "scheduled",
+      String(b.notes || "").slice(0, 2000)
+    );
+
+  logActivity(req.user, "visit", r.lastInsertRowid, "scheduled", {
+    client: b.client_name,
+    date: b.visit_date,
+  });
+  res.json({ ok: true, id: r.lastInsertRowid });
+});
 
 app.patch(
   "/api/admin/site-visits/:id",
@@ -1871,37 +1806,32 @@ app.get("/api/admin/email-campaigns", requireAuth, async (req, res) => {
   res.json({ ok: true, campaigns });
 });
 
-app.post(
-  "/api/admin/email-campaigns",
-  requireAuth,
-  requireEditor,
-  async (req, res) => {
-    const b = req.body || {};
-    if (!b.subject || !b.body) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Subject line and main body are required." });
-    }
-
-    const r = await db
-      .prepare(
-        `INSERT INTO email_campaigns (title, subject, preheader, body, created_by)
-       VALUES (?, ?, ?, ?, ?)`
-      )
-      .run(
-        String(b.title || b.subject).slice(0, 160),
-        String(b.subject).slice(0, 250),
-        String(b.preheader || "").slice(0, 250),
-        String(b.body || ""),
-        req.user.name || "Charul"
-      );
-
-    logActivity(req.user, "email_campaign", r.lastInsertRowid, "saved", {
-      title: b.title || b.subject,
-    });
-    res.json({ ok: true, id: r.lastInsertRowid });
+app.post("/api/admin/email-campaigns", requireAuth, requireEditor, async (req, res) => {
+  const b = req.body || {};
+  if (!b.subject || !b.body) {
+    return res
+      .status(400)
+      .json({ ok: false, error: "Subject line and main body are required." });
   }
-);
+
+  const r = await db
+    .prepare(
+      `INSERT INTO email_campaigns (title, subject, preheader, body, created_by)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(
+      String(b.title || b.subject).slice(0, 160),
+      String(b.subject).slice(0, 250),
+      String(b.preheader || "").slice(0, 250),
+      String(b.body || ""),
+      req.user.name || "Charul"
+    );
+
+  logActivity(req.user, "email_campaign", r.lastInsertRowid, "saved", {
+    title: b.title || b.subject,
+  });
+  res.json({ ok: true, id: r.lastInsertRowid });
+});
 
 app.delete(
   "/api/admin/email-campaigns/:id",
@@ -1917,10 +1847,8 @@ app.delete(
 
 /* ---------- admin: AI email copywriter (free Gemini tier) ---------- */
 function geminiEmailIfConfigured({ brief, listing, tone }) {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) return null;
-  // Same rule as the concierge: only AI Studio keys (AIza…) work here.
-  if (!key.startsWith("AIza")) return null;
+  const cfg = geminiEndpointConfig();
+  if (!cfg) return null;
 
   const toneText =
     tone === "urgent"
@@ -1948,10 +1876,7 @@ ${toneText}
 
 ${listingBlock}
 
-Brief from the team: ${
-    brief ||
-    "Announce and present this property to our private client list, invite replies and site visits."
-  }
+Brief from the team: ${brief || "Announce and present this property to our private client list, invite replies and site visits."}
 
 Return STRICT JSON only (no markdown fences, no commentary) in exactly this shape:
 {"subject": "...", "preheader": "...", "body": "..."}
@@ -1961,12 +1886,9 @@ Rules for the JSON:
 - preheader: 80-110 characters, complements the subject, inbox preview line.
 - body: plain text (\\n for line breaks, blank line between paragraphs). 140-220 words. Structure: personalised opening line → 3-5 value bullets (lines starting with "• ") → a single clear call-to-action (reply, call, or private viewing) → sign-off "Warm regards,\\nVipul Agnihotri\\nPrincipal Advisor | Providers Real Estate\\n+91 98103 33886". Do NOT include the company footer, unsubscribe lines, or the subject inside the body.`;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(
-    key
-  )}`;
-  return fetch(url, {
+  return fetch(cfg.url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...cfg.headers },
     body: JSON.stringify({
       contents: [{ role: "user", parts: [{ text: system }] }],
       generationConfig: { temperature: 0.7, maxOutputTokens: 900 },
@@ -2000,45 +1922,42 @@ Rules for the JSON:
     .catch(() => null);
 }
 
-app.post(
-  "/api/admin/ai-email",
-  requireAuth,
-  requireEditor,
-  async (req, res) => {
-    const { brief, listingId, tone } = req.body || {};
+app.post("/api/admin/ai-email", requireAuth, requireEditor, async (req, res) => {
+  const { brief, listingId, tone } = req.body || {};
 
-    let listing = null;
-    if (listingId) {
-      const row = await db
-        .prepare("SELECT * FROM listings WHERE id = ?")
-        .get(listingId);
-      if (row) listing = rowToPublicListing(row);
-    }
-
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(400).json({
-        ok: false,
-        error:
-          "GEMINI_API_KEY is not set. Add GEMINI_API_KEY=your_key to the .env file in the project folder and restart the server.",
-      });
-    }
-
-    const result = await geminiEmailIfConfigured({ brief, listing, tone });
-    if (!result) {
-      return res.status(502).json({
-        ok: false,
-        error:
-          "Gemini did not return usable copy (quota or network). Please try again in a moment.",
-      });
-    }
-
-    logActivity(req.user, "email_campaign", null, "ai_draft_generated", {
-      listing: listing ? listing.title : "general",
-      tone: tone || "discreet",
-    });
-    res.json({ ok: true, ...result });
+  let listing = null;
+  if (listingId) {
+    const row = await db
+      .prepare("SELECT * FROM listings WHERE id = ?")
+      .get(listingId);
+    if (row) listing = rowToPublicListing(row);
   }
-);
+
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(400).json({
+      ok: false,
+      error:
+        "GEMINI_API_KEY is not set. Add GEMINI_API_KEY=your_key to the .env file in the project folder and restart the server. Both AI Studio keys (AIza…) and Vertex AI express keys (AQ.…) work.",
+    });
+  }
+
+  const result = await geminiEmailIfConfigured({ brief, listing, tone });
+  if (!result) {
+    const key = process.env.GEMINI_API_KEY || "";
+    return res.status(502).json({
+      ok: false,
+      error: !/^(AIza|AQ\.)/.test(key)
+        ? `The GEMINI_API_KEY in .env starts with "${key.slice(0, 3)}" — Google Gemini keys start with "AIza" (AI Studio) or "AQ." (Vertex AI express). Fix the key and restart the server.`
+        : "Gemini did not return usable copy (quota or network). Please try again in a moment.",
+    });
+  }
+
+  logActivity(req.user, "email_campaign", null, "ai_draft_generated", {
+    listing: listing ? listing.title : "general",
+    tone: tone || "discreet",
+  });
+  res.json({ ok: true, ...result });
+});
 
 /* ---------- admin: Brevo integration status ---------- */
 app.get("/api/admin/brevo-status", requireAuth, (req, res) => {
@@ -2210,10 +2129,7 @@ const PORT = process.env.PORT || 3000;
    (Async routes that hit a database error used to crash Node — this keeps
    the site alive and logs the problem instead.) */
 process.on("unhandledRejection", (err) => {
-  console.error(
-    "[Background error kept the site alive:]",
-    err && err.message ? err.message : err
-  );
+  console.error("[Background error kept the site alive:]", err && err.message ? err.message : err);
 });
 
 if (require.main === module) {
@@ -2225,15 +2141,12 @@ if (require.main === module) {
       process.exit(1);
     }
     if (USE_CLOUD_STORAGE) await ensureBucket();
+    ensureUploadDir(); // local runs pre-create data/uploads; no-op on read-only FS
     app.listen(PORT, () => {
       console.log(`Providers Real Estate → http://localhost:${PORT}`);
+      console.log(`Site: /  ·  Login: /login or /login.html  ·  Dashboard: /admin`);
       console.log(
-        `Site: /  ·  Login: /login or /login.html  ·  Dashboard: /admin`
-      );
-      console.log(
-        `Team: ${TEAM_ACCOUNTS.map((a) => `${a.username} (${a.role})`).join(
-          ", "
-        )}`
+        `Team: ${TEAM_ACCOUNTS.map((a) => `${a.username} (${a.role})`).join(", ")}`
       );
       console.log(
         `Database: Supabase Postgres — photos → ${
@@ -2249,14 +2162,12 @@ if (require.main === module) {
       }
       const key = process.env.GEMINI_API_KEY;
       if (key) {
-        const looksValid = key.startsWith("AIza");
+        const aiStudio = key.startsWith("AIza");
+        const vertexExpress = key.startsWith("AQ.");
         console.log(
-          looksValid
-            ? `AI Concierge: Gemini API (gemini-2.0-flash) — key loaded`
-            : `AI Concierge: built-in brain (the GEMINI_API_KEY in .env starts with "${key.slice(
-                0,
-                3
-              )}" — that is a Google Cloud key, not a Gemini key). Get a free Gemini key at aistudio.google.com/apikey (it starts with "AIza"), or delete the line to use the built-in brain.`
+          aiStudio || vertexExpress
+            ? `AI Concierge: Gemini API (gemini-2.0-flash) — key loaded (${vertexExpress ? "Vertex AI express" : "AI Studio"} format)`
+            : `AI Concierge: built-in brain (the GEMINI_API_KEY in .env starts with "${key.slice(0, 3)}" — that is not a Gemini key). Gemini keys start with "AIza" (aistudio.google.com/apikey) or "AQ." (Vertex AI express), or delete the line to use the built-in brain.`
         );
       } else {
         console.log(
