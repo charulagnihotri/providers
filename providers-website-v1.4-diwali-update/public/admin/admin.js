@@ -26,24 +26,6 @@ let visits = [];
 let campaigns = [];
 let activity = [];
 
-/* iPhone photos often arrive as HEIC (.heic/.heif). They upload fine, but
-   Chrome/Edge/Firefox cannot display them — buyers would see broken images.
-   Warn early and skip them, with a one-line how-to-fix. */
-function splitHeic(files) {
-  const ok = [];
-  let heic = 0;
-  for (const f of files) {
-    if (/\.hei[cf]$/i.test(f.name || "") || /image\/hei[cf]/i.test(f.type || "")) {
-      heic++;
-    } else ok.push(f);
-  }
-  if (heic)
-    toast(
-      `${heic} photo${heic > 1 ? "s" : ""} skipped: iPhone HEIC files don't display in browsers. Fix once on the iPhone: Settings → Camera → Formats → Most Compatible (or export as JPEG from Photos), then re-upload.`
-    );
-  return ok;
-}
-
 let leadFilter = "all";
 let leadSearchQuery = "";
 let activeKanbanMode = "leads"; // "leads" | "listings"
@@ -148,6 +130,7 @@ async function refreshAllData() {
 
     renderOverview();
     renderLeads();
+    updateCrmLeadsEmailCount();
     renderKanban();
     renderListings();
     renderVisits();
@@ -916,14 +899,9 @@ function setupListingManagement() {
   flyerInput?.addEventListener("change", async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const [ok] = splitHeic([file]);
-    if (!ok) {
-      flyerInput.value = "";
-      return;
-    }
 
     const fd = new FormData();
-    fd.append("file", ok);
+    fd.append("file", file);
 
     const btn = $("#btnPickAdFlyer");
     const origText = btn ? btn.textContent : "";
@@ -961,13 +939,8 @@ function setupListingManagement() {
   $("#btnPickGallery")?.addEventListener("click", () => galleryInput?.click());
 
   galleryInput?.addEventListener("change", async (e) => {
-    let files = Array.from(e.target.files || []);
+    const files = Array.from(e.target.files || []);
     if (!files.length) return;
-    files = splitHeic(files);
-    if (!files.length) {
-      galleryInput.value = "";
-      return;
-    }
 
     if (galleryStatus) {
       galleryStatus.textContent = `Uploading ${files.length} photo(s)…`;
@@ -1413,20 +1386,177 @@ function setupEmailMarketing() {
     btn.textContent = orig;
   });
 
-  // Brevo integration status chip
-  api("/api/admin/brevo-status")
-    .then((d) => {
-      const chip = $("#brevoStatusChip");
-      if (!chip) return;
-      if (d.ok && d.configured) {
-        chip.textContent = "🔑 Brevo: connected";
-        chip.classList.add("ok");
-      } else {
-        chip.textContent = "🔑 Brevo: add API key at test";
-        chip.classList.add("warn");
+  // Recipient list management
+  const recipientsInput = $("#emRecipients");
+  const recipientsCountPill = $("#recipientsCountPill");
+
+  function getCleanRecipients() {
+    const raw = recipientsInput ? recipientsInput.value : "";
+    const list = raw
+      .split(/[\r\n,;]+/)
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(s));
+    return [...new Set(list)];
+  }
+
+  function updateRecipientsCount() {
+    if (!recipientsCountPill) return;
+    const count = getCleanRecipients().length;
+    recipientsCountPill.textContent = `${count} recipient${count === 1 ? "" : "s"}`;
+    recipientsCountPill.classList.toggle("has-recipients", count > 0);
+  }
+
+  recipientsInput?.addEventListener("input", updateRecipientsCount);
+
+  // Quick populate: All CRM Leads with Email
+  $("#btnRecipientsAddLeads")?.addEventListener("click", () => {
+    const validEmails = leads
+      .map((l) => (l.email || "").trim())
+      .filter((e) => /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(e));
+    if (!validEmails.length) {
+      toast("No client emails found in CRM leads yet.");
+      return;
+    }
+    const current = getCleanRecipients();
+    let added = 0;
+    validEmails.forEach((e) => {
+      const lower = e.toLowerCase();
+      if (!current.includes(lower)) {
+        current.push(lower);
+        added++;
       }
-    })
-    .catch(() => {});
+    });
+    recipientsInput.value = current.join(",\n");
+    updateRecipientsCount();
+    toast(`Added ${added} client email${added === 1 ? "" : "s"} from CRM leads.`);
+  });
+
+  // Quick populate: Active Inquiries
+  $("#btnRecipientsAddActive")?.addEventListener("click", () => {
+    const activeEmails = leads
+      .filter((l) => l.status !== "closed" && l.status !== "lost")
+      .map((l) => (l.email || "").trim())
+      .filter((e) => /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(e));
+    if (!activeEmails.length) {
+      toast("No active inquiries with email found.");
+      return;
+    }
+    const current = getCleanRecipients();
+    let added = 0;
+    activeEmails.forEach((e) => {
+      const lower = e.toLowerCase();
+      if (!current.includes(lower)) {
+        current.push(lower);
+        added++;
+      }
+    });
+    recipientsInput.value = current.join(",\n");
+    updateRecipientsCount();
+    toast(`Added ${added} active inquiry email${added === 1 ? "" : "s"}.`);
+  });
+
+  // Clear recipients list
+  $("#btnClearRecipients")?.addEventListener("click", () => {
+    if (!recipientsInput.value.trim()) return;
+    recipientsInput.value = "";
+    updateRecipientsCount();
+    toast("Recipient list cleared.");
+  });
+
+  // Brevo account integration status & drawer
+  let brevoConfigured = false;
+  let brevoSenderEmail = "vipulproviders@gmail.com";
+
+  async function checkBrevoStatus() {
+    try {
+      const d = await api("/api/admin/brevo-status");
+      brevoConfigured = Boolean(d.ok && d.configured);
+      if (d.senderEmail) brevoSenderEmail = d.senderEmail;
+
+      const chip = $("#brevoStatusChip");
+      const dot = $("#bcfgDot");
+      const statusText = $("#bcfgStatusText");
+
+      if (brevoConfigured) {
+        if (chip) {
+          chip.textContent = "🔑 Brevo: connected";
+          chip.className = "brevo-chip ok";
+        }
+        if (dot) dot.className = "status-indicator-dot connected";
+        if (statusText) statusText.textContent = `Connected (${d.senderEmail || "verified"})`;
+        if ($("#cfgBrevoSender")) $("#cfgBrevoSender").value = d.senderEmail || "";
+        if ($("#cfgBrevoSenderName")) $("#cfgBrevoSenderName").value = d.senderName || "";
+        if ($("#cfgBrevoKey") && d.maskedKey) $("#cfgBrevoKey").placeholder = d.maskedKey;
+      } else {
+        if (chip) {
+          chip.textContent = "🔑 Brevo: not configured";
+          chip.className = "brevo-chip warn";
+        }
+        if (dot) dot.className = "status-indicator-dot unconfigured";
+        if (statusText) statusText.textContent = "Not linked — enter API key to connect";
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  checkBrevoStatus();
+
+  $("#btnToggleBrevoConfig")?.addEventListener("click", () => {
+    $("#brevoConfigDrawer")?.classList.toggle("hidden");
+  });
+
+  $("#btnSaveBrevoConfig")?.addEventListener("click", async () => {
+    const btn = $("#btnSaveBrevoConfig");
+    const msg = $("#bcfgMsg");
+    const apiKey = $("#cfgBrevoKey")?.value.trim();
+    const senderEmail = $("#cfgBrevoSender")?.value.trim();
+    const senderName = $("#cfgBrevoSenderName")?.value.trim();
+
+    if (!apiKey && !brevoConfigured) {
+      if (msg) {
+        msg.textContent = "Please enter your Brevo API key.";
+        msg.style.color = "#b4232a";
+      }
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Connecting…";
+    if (msg) msg.textContent = "";
+
+    try {
+      const res = await api("/api/admin/brevo-config", {
+        method: "POST",
+        body: JSON.stringify({ apiKey, senderEmail, senderName }),
+      });
+
+      if (res.ok) {
+        if (msg) {
+          msg.textContent = "✅ " + (res.message || "Connected to Brevo successfully!");
+          msg.style.color = "#1f7a45";
+        }
+        toast("Brevo account linked successfully!");
+        if (apiKey) sessionStorage.setItem(BREVO_KEY_SESSION, apiKey);
+        await checkBrevoStatus();
+        setTimeout(() => {
+          $("#brevoConfigDrawer")?.classList.add("hidden");
+        }, 2200);
+      } else {
+        if (msg) {
+          msg.textContent = "Error: " + (res.error || "Failed to link Brevo.");
+          msg.style.color = "#b4232a";
+        }
+      }
+    } catch {
+      if (msg) {
+        msg.textContent = "Network error connecting to Brevo.";
+        msg.style.color = "#b4232a";
+      }
+    }
+
+    btn.disabled = false;
+    btn.textContent = "💾 Save & Test Connection";
+  });
 
   // Desktop vs Mobile preview
   $("#btnPreviewDesktop")?.addEventListener("click", () => {
@@ -1485,6 +1615,8 @@ function setupEmailMarketing() {
     $("#emSubject").value = "";
     $("#emPreheader").value = "";
     $("#emBody").value = "";
+    if (recipientsInput) recipientsInput.value = "";
+    updateRecipientsCount();
     $("#campaignTemplateSelect").value = "";
     updateEmailLivePreview();
   });
@@ -1529,6 +1661,108 @@ function setupEmailMarketing() {
     navigator.clipboard.writeText(subject).then(() => {
       showCopyToast("✅ Copied subject line to clipboard!");
     });
+  });
+
+  // DIRECT CAMPAIGN DISPATCH VIA BREVO MODAL & HANDLERS
+  const confirmModal = $("#sendConfirmModal");
+  function closeConfirmModal() {
+    confirmModal?.classList.remove("open");
+    confirmModal?.setAttribute("aria-hidden", "true");
+  }
+  $("#closeSendConfirmModal")?.addEventListener("click", closeConfirmModal);
+  $("#cancelSendConfirmModal")?.addEventListener("click", closeConfirmModal);
+  $("#sendConfirmModalBackdrop")?.addEventListener("click", closeConfirmModal);
+
+  $("#btnSendBrevoNow")?.addEventListener("click", () => {
+    const recipients = getCleanRecipients();
+    if (!recipients.length) {
+      toast("Please enter at least one recipient email address in the 'Send To' section.");
+      $("#emRecipients")?.focus();
+      return;
+    }
+    const subject = $("#emSubject")?.value.trim();
+    if (!subject) {
+      toast("Please enter a Subject Line for your email campaign.");
+      $("#emSubject")?.focus();
+      return;
+    }
+    const body = $("#emBody")?.value.trim();
+    if (!body) {
+      toast("Please write your email body before sending.");
+      $("#emBody")?.focus();
+      return;
+    }
+
+    if (!brevoConfigured && !sessionStorage.getItem(BREVO_KEY_SESSION)) {
+      toast("Please link your Brevo API Key under '⚙️ Configure Brevo Key' first.");
+      $("#brevoConfigDrawer")?.classList.remove("hidden");
+      $("#cfgBrevoKey")?.focus();
+      return;
+    }
+
+    // Populate confirm modal details
+    if ($("#confirmModalSubject")) $("#confirmModalSubject").textContent = subject;
+    if ($("#confirmModalSender")) {
+      $("#confirmModalSender").textContent = `Providers Real Estate <${brevoSenderEmail}>`;
+    }
+    if ($("#confirmModalCount")) {
+      $("#confirmModalCount").textContent = `${recipients.length} client${recipients.length === 1 ? "" : "s"}`;
+    }
+    if ($("#confirmModalRecipientsList")) {
+      $("#confirmModalRecipientsList").innerHTML = recipients
+        .map((e) => `<span class="confirm-email-chip">${esc(e)}</span>`)
+        .join("");
+    }
+    if ($("#confirmSendMsg")) $("#confirmSendMsg").textContent = "";
+
+    confirmModal?.classList.add("open");
+    confirmModal?.setAttribute("aria-hidden", "false");
+  });
+
+  $("#btnExecuteSendBrevo")?.addEventListener("click", async () => {
+    const btn = $("#btnExecuteSendBrevo");
+    const msg = $("#confirmSendMsg");
+    const statusMsg = $("#sendStatusMsg");
+    const recipients = getCleanRecipients();
+
+    btn.disabled = true;
+    btn.textContent = "🚀 Dispatching via Brevo…";
+    if (msg) msg.textContent = "";
+
+    try {
+      const res = await api("/api/admin/brevo/send", {
+        method: "POST",
+        body: JSON.stringify({
+          recipients,
+          subject: $("#emSubject").value,
+          htmlContent: compileFullBrevoHTML(),
+          campaignTitle: $("#emTitle").value || $("#emSubject").value,
+        }),
+      });
+
+      if (res.ok) {
+        closeConfirmModal();
+        toast(res.message || "Email campaign dispatched successfully via Brevo!");
+        if (statusMsg) {
+          statusMsg.textContent = res.message;
+          statusMsg.style.color = "#1f7a45";
+        }
+        await refreshAllData();
+      } else {
+        if (msg) {
+          msg.textContent = "Error: " + (res.error || "Failed to dispatch emails.");
+          msg.style.color = "#b4232a";
+        }
+      }
+    } catch {
+      if (msg) {
+        msg.textContent = "Network error communicating with Brevo.";
+        msg.style.color = "#b4232a";
+      }
+    }
+
+    btn.disabled = false;
+    btn.textContent = "🚀 Yes, Send Now via Brevo";
   });
 
   // Brevo Test Send Modal
@@ -1592,6 +1826,15 @@ function setupEmailMarketing() {
     btn.disabled = false;
     btn.textContent = "Send Test Now";
   });
+}
+
+function updateCrmLeadsEmailCount() {
+  const el = $("#crmLeadsEmailCount");
+  if (!el) return;
+  const count = leads.filter(
+    (l) => l.email && /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(l.email.trim())
+  ).length;
+  el.textContent = count;
 }
 
 /* Quick test recipients (saved per browser) */
@@ -2130,13 +2373,8 @@ function onAdListingChange() {
 async function onAdPhotoUpload(e) {
   const file = e.target.files?.[0];
   if (!file) return;
-  const [ok] = splitHeic([file]);
-  if (!ok) {
-    e.target.value = "";
-    return;
-  }
   const fd = new FormData();
-  fd.append("file", ok);
+  fd.append("file", file);
   asMsg("Uploading photo…", true);
   try {
     const res = await api("/api/admin/upload", { method: "POST", body: fd });
@@ -2169,9 +2407,6 @@ function loadAdImage(url) {
   if (!url) return Promise.resolve(null);
   return new Promise((resolve) => {
     const img = new Image();
-    // Required so photos stored in Supabase Storage can be drawn onto the
-    // canvas and still be exported as PNG (no tainted canvas).
-    img.crossOrigin = "anonymous";
     img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = url;

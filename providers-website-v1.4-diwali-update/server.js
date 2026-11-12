@@ -2,7 +2,7 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { createDb, SCHEMA_SQL, nowStr, monthStartStr } = require("./db");
+const Database = require("better-sqlite3");
 const multer = require("multer");
 
 /* ---------- tiny .env loader (no dependency) ---------- */
@@ -39,170 +39,7 @@ app.use(express.json({ limit: "5mb" }));
 const SESSION_DAYS = 30;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const UPLOAD_DIR = path.join(__dirname, "data", "uploads");
-/* Local runs keep photos in data/uploads. Netlify's filesystem is READ-ONLY
-   (/var/task) — creating this folder there crashes the entire function before
-   it can answer any request ("This function has crashed"). Netlify does not
-   guarantee any specific env var inside the function runtime, so we no longer
-   create the folder at boot at all: it is created lazily by ensureUploadDir()
-   only when a photo is actually written locally, and failures are swallowed.
-   On Netlify photos live in Supabase Storage instead. */
-function ensureUploadDir() {
-  try {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-    return true;
-  } catch {
-    return false; // read-only filesystem (Netlify/Lambda) — cloud storage only
-  }
-}
-
-/* ---------- photo storage: Supabase Storage (cloud) or local disk ---------- */
-const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
-const SUPABASE_SERVICE_KEY =
-  process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || "";
-const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || "uploads";
-const USE_CLOUD_STORAGE = Boolean(SUPABASE_URL && SUPABASE_SERVICE_KEY);
-/* Netlify sets NETLIFY during BUILDS but not reliably inside the function
-   runtime — there we are just an AWS Lambda container. Detect both, so the
-   error-handling paths behave correctly in production. */
-const RUNNING_ON_NETLIFY =
-  Boolean(process.env.NETLIFY) ||
-  Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
-  Boolean(process.env.AWS_EXECUTION_ENV);
-
-/* The photo bucket must exist in Supabase before anything can be uploaded.
-   We no longer depend on someone clicking "New bucket" in the dashboard:
-   the server creates a public bucket itself at startup (service_role key is
-   allowed to). Running this twice is harmless — "already exists" counts as
-   success. */
-let storageNote = "checking…"; // shown on the startup banner
-let bucketOk = false; // true once the bucket is confirmed usable
-async function ensureBucket() {
-  if (!USE_CLOUD_STORAGE) return false;
-  try {
-    const res = await fetch(`${SUPABASE_URL}/storage/v1/bucket`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ name: SUPABASE_BUCKET, public: true }),
-    });
-    if (res.ok) {
-      storageNote = `bucket "${SUPABASE_BUCKET}" ready (public)`;
-      bucketOk = true;
-      return true;
-    }
-    const detail = await res.text().catch(() => "");
-    if (/already exists|duplicate/i.test(detail)) {
-      storageNote = `bucket "${SUPABASE_BUCKET}" ready (public)`;
-      bucketOk = true;
-      return true;
-    }
-    if (res.status === 401 || res.status === 403) {
-      storageNote =
-        "key rejected — SUPABASE_SERVICE_KEY must be the service_role key (Supabase → Project Settings → API)";
-    } else {
-      storageNote = `bucket check failed (${res.status}) ${detail.slice(0, 110)}`;
-    }
-  } catch (err) {
-    storageNote = `not reachable (${err.message})`;
-  }
-  return false;
-}
-
-/* Saves an uploaded photo. On Netlify → Supabase Storage (public URL).
-   Local development without Supabase keys → data/uploads on disk.
-   If the cloud refuses the photo on a local machine, the photo quietly
-   lands on disk too — uploading must never be blocked at home. */
-async function saveUpload(buffer, originalName, mimeType) {
-  const ext = path.extname(originalName || "").slice(0, 12) || ".jpg";
-  const name = `${crypto.randomBytes(16).toString("hex")}${ext}`;
-  if (USE_CLOUD_STORAGE) {
-    const attempt = () =>
-      fetch(`${SUPABASE_URL}/storage/v1/object/${SUPABASE_BUCKET}/${name}`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-          "Content-Type": mimeType || "application/octet-stream",
-          "x-upsert": "true",
-        },
-        body: buffer,
-      });
-    let res = null;
-    let netErr = null;
-    try {
-      res = await attempt();
-    } catch (e) {
-      netErr = e;
-    }
-    if ((!res || !res.ok) && (!res || res.status === 400 || res.status === 404)) {
-      // bucket probably missing → create it ourselves, then retry once
-      if (await ensureBucket()) {
-        try {
-          res = await attempt();
-          netErr = null;
-        } catch (e) {
-          netErr = e;
-        }
-      }
-    }
-    if (!res || !res.ok) {
-      const detail = netErr ? String(netErr.message || netErr) : await res.text().catch(() => "");
-      const hint = netErr
-        ? "Fix: Supabase Storage is not reachable — check the internet connection and SUPABASE_URL in .env."
-        : /not found|does not exist/i.test(detail)
-        ? `Fix: Supabase dashboard → Storage → New bucket → name it "${SUPABASE_BUCKET}" → switch Public bucket ON.`
-        : res.status === 401 || res.status === 403
-        ? "Fix: SUPABASE_SERVICE_KEY in .env must be the service_role key (Supabase → Project Settings → API)."
-        : "";
-      if (!RUNNING_ON_NETLIFY && ensureUploadDir()) {
-        // local machine: never block the family's work on storage setup
-        fs.writeFileSync(path.join(UPLOAD_DIR, name), buffer);
-        console.warn(
-          `⚠ Supabase Storage refused a photo (${netErr ? "offline" : res.status}) — saved to data/uploads on this Mac instead. ${hint}`
-        );
-        return { storedName: name, url: `/uploads/${name}` };
-      }
-      throw new Error(
-        `Photo storage failed (${netErr ? "offline" : res.status}). ${hint} ${detail.slice(0, 120)}`
-      );
-    }
-    return {
-      storedName: name,
-      url: `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${name}`,
-    };
-  }
-  if (ensureUploadDir()) {
-    fs.writeFileSync(path.join(UPLOAD_DIR, name), buffer);
-    return { storedName: name, url: `/uploads/${name}` };
-  }
-  throw new Error(
-    "Photo storage unavailable: local disk is read-only and Supabase Storage is not configured (add SUPABASE_URL + SUPABASE_SERVICE_KEY to .env)."
-  );
-}
-
-/* Best-effort delete from Supabase Storage (or disk when running locally) */
-async function deleteStoredFile(storedName) {
-  if (USE_CLOUD_STORAGE) {
-    try {
-      await fetch(
-        `${SUPABASE_URL}/storage/v1/object/${SUPABASE_BUCKET}/${storedName}`,
-        {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
-        }
-      );
-    } catch {
-      /* ignore */
-    }
-    return;
-  }
-  try {
-    fs.unlinkSync(path.join(UPLOAD_DIR, storedName));
-  } catch {
-    /* ignore */
-  }
-}
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // Static routes
 app.use("/uploads", express.static(UPLOAD_DIR));
@@ -243,35 +80,134 @@ function parseCookies(req) {
   return out;
 }
 
-/* ---------- database (Supabase Postgres) ---------- */
-const db = createDb();
+/* ---------- database ---------- */
+fs.mkdirSync(path.join(__dirname, "data"), { recursive: true });
+const db = new Database(path.join(__dirname, "data", "leads.db"));
+db.pragma("journal_mode = WAL");
 
-/* Columns added after first launch — kept for older setups */
-const ensureColumn = async (table, col, def) => {
-  const cols = (await db.pragma(`table_info(${table})`)).map((c) => c.name);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS leads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    name TEXT DEFAULT '',
+    phone TEXT DEFAULT '',
+    email TEXT DEFAULT '',
+    interest TEXT DEFAULT 'General',
+    message TEXT DEFAULT '',
+    source TEXT DEFAULT 'website',
+    status TEXT NOT NULL DEFAULT 'new',
+    notes TEXT NOT NULL DEFAULT '',
+    assigned_to TEXT NOT NULL DEFAULT 'Vipul'
+  );
+
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    pass_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'editor',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS listings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    title TEXT NOT NULL,
+    location TEXT NOT NULL DEFAULT '',
+    property_type TEXT NOT NULL DEFAULT 'Residential',
+    listing_type TEXT NOT NULL DEFAULT 'sale',
+    badge TEXT NOT NULL DEFAULT 'For Sale',
+    price TEXT NOT NULL DEFAULT 'Price on request',
+    specs_json TEXT NOT NULL DEFAULT '[]',
+    image_url TEXT NOT NULL DEFAULT '',
+    images_json TEXT NOT NULL DEFAULT '[]',
+    video_url TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    features_json TEXT NOT NULL DEFAULT '[]',
+    published INTEGER NOT NULL DEFAULT 0,
+    marketing_status TEXT NOT NULL DEFAULT 'needs ad',
+    marketing_note TEXT NOT NULL DEFAULT '',
+    marketing_link TEXT NOT NULL DEFAULT '',
+    follow_up_at TEXT,
+    follow_up_note TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS listing_assets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id INTEGER NOT NULL,
+    stored_name TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL DEFAULT '',
+    uploaded_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    uploaded_by INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS site_visits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    client_name TEXT NOT NULL,
+    client_phone TEXT NOT NULL DEFAULT '',
+    client_email TEXT NOT NULL DEFAULT '',
+    property_title TEXT NOT NULL DEFAULT '',
+    visit_date TEXT NOT NULL,
+    visit_time TEXT NOT NULL DEFAULT '11:00 AM',
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    notes TEXT NOT NULL DEFAULT ''
+  );
+
+  CREATE TABLE IF NOT EXISTS email_campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    title TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    preheader TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT 'Charul'
+  );
+
+  CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    user_id INTEGER,
+    user_name TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER,
+    action TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT ''
+  );
+
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+`);
+
+// Migration helpers
+const ensureColumn = (table, col, def) => {
+  const cols = db.pragma(`table_info(${table})`).map((c) => c.name);
   if (!cols.includes(col)) {
-    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
   }
 };
 
-/* One-time initialisation — schema + seed data. Runs on boot and on every
-   Netlify cold start; everything is IF NOT EXISTS / count-guarded. */
-async function initDb() {
-  await db.exec(SCHEMA_SQL);
-
-  await ensureColumn("leads", "status", "TEXT NOT NULL DEFAULT 'new'");
-  await ensureColumn("leads", "notes", "TEXT NOT NULL DEFAULT ''");
-  await ensureColumn("leads", "assigned_to", "TEXT NOT NULL DEFAULT 'Vipul'");
-  await ensureColumn("users", "role", "TEXT NOT NULL DEFAULT 'editor'");
-  await ensureColumn("listings", "images_json", "TEXT NOT NULL DEFAULT '[]'");
-  await ensureColumn("listings", "video_url", "TEXT NOT NULL DEFAULT ''");
-  await ensureColumn("listings", "description", "TEXT NOT NULL DEFAULT ''");
-  await ensureColumn("listings", "features_json", "TEXT NOT NULL DEFAULT '[]'");
-
-  await seedDefaultListings();
-  await seedDefaultCampaigns();
-  await seedTeamAccounts();
-}
+ensureColumn("leads", "status", "TEXT NOT NULL DEFAULT 'new'");
+ensureColumn("leads", "notes", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("leads", "assigned_to", "TEXT NOT NULL DEFAULT 'Vipul'");
+ensureColumn("users", "role", "TEXT NOT NULL DEFAULT 'editor'");
+ensureColumn("listings", "images_json", "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn("listings", "video_url", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("listings", "description", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("listings", "features_json", "TEXT NOT NULL DEFAULT '[]'");
 
 const LEAD_STATUSES = [
   "new",
@@ -290,21 +226,19 @@ const MARKETING_STAGES = [
   "closed",
 ];
 
-async function logActivity(user, entityType, entityId, action, detail) {
+function logActivity(user, entityType, entityId, action, detail) {
   try {
-    await db
-      .prepare(
-        `INSERT INTO activity_log (user_id, user_name, entity_type, entity_id, action, detail)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        user?.id || null,
-        user?.name || "System",
-        entityType,
-        entityId ?? null,
-        action,
-        typeof detail === "string" ? detail : JSON.stringify(detail || {})
-      );
+    db.prepare(
+      `INSERT INTO activity_log (user_id, user_name, entity_type, entity_id, action, detail)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      user?.id || null,
+      user?.name || "System",
+      entityType,
+      entityId ?? null,
+      action,
+      typeof detail === "string" ? detail : JSON.stringify(detail || {})
+    );
   } catch {
     /* ignore logging error */
   }
@@ -349,7 +283,7 @@ const DEFAULT_LISTINGS = [
     location: "Sector 67, Gurugram",
     property_type: "Retail",
     listing_type: "sale",
-    badge: "Representative · Off-Market",
+    badge: "For Sale",
     price: "Price on request",
     specs: [
       "A spacious size of 666 sq. ft.",
@@ -380,7 +314,7 @@ const DEFAULT_LISTINGS = [
     location: "Greater Kailash I, South Delhi",
     property_type: "Residential",
     listing_type: "sale",
-    badge: "Representative · Off-Market",
+    badge: "Park Facing",
     price: "₹ 4.85 Cr",
     specs: [
       "1,850 sq. ft. built-up (approx.)",
@@ -412,7 +346,7 @@ const DEFAULT_LISTINGS = [
     location: "DLF Phase 1, Gurugram",
     property_type: "Residential",
     listing_type: "sale",
-    badge: "Representative · Off-Market",
+    badge: "Exclusive",
     price: "₹ 11.75 Cr",
     specs: [
       "5 BHK · 4,800 sq. ft. built-up · 500 sq. yd. plot",
@@ -441,65 +375,59 @@ const DEFAULT_LISTINGS = [
   },
 ];
 
-async function seedDefaultListings() {
-  const countRow = await db.prepare("SELECT COUNT(*) c FROM listings").get();
-  if (!countRow || countRow.c === 0) {
-    const ins = db.prepare(`
-      INSERT INTO listings (
-        title, location, property_type, listing_type, badge, price, specs_json,
-        image_url, images_json, video_url, description, features_json,
-        published, marketing_status, sort_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    for (let i = 0; i < DEFAULT_LISTINGS.length; i++) {
-      const l = DEFAULT_LISTINGS[i];
-      await ins.run(
-        l.title,
-        l.location,
-        l.property_type,
-        l.listing_type,
-        l.badge,
-        l.price,
-        JSON.stringify(l.specs),
-        l.image_url,
-        JSON.stringify(l.images),
-        l.video_url,
-        l.description,
-        JSON.stringify(l.features),
-        l.published,
-        l.marketing_status,
-        i
-      );
-    }
-
-    // Ensure listing 1 uses the real ad creative image (first seed only,
-    // so photos you upload later are never overwritten)
-    await db
-      .prepare(
-        "UPDATE listings SET image_url = ?, images_json = ? WHERE id = 1"
-      )
-      .run(
-        "/images/m3m-urbana-ad.jpg",
-        JSON.stringify([
-          "/images/m3m-urbana-ad.jpg",
-          "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=1400&q=80",
-          "https://images.unsplash.com/photo-1519642918688-7e43b19245d8?auto=format&fit=crop&w=1400&q=80",
-        ])
-      );
-  }
+const listingCount = db.prepare("SELECT COUNT(*) c FROM listings").get().c;
+if (listingCount === 0) {
+  const ins = db.prepare(`
+    INSERT INTO listings (
+      title, location, property_type, listing_type, badge, price, specs_json,
+      image_url, images_json, video_url, description, features_json,
+      published, marketing_status, sort_order
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  DEFAULT_LISTINGS.forEach((l, i) => {
+    ins.run(
+      l.title,
+      l.location,
+      l.property_type,
+      l.listing_type,
+      l.badge,
+      l.price,
+      JSON.stringify(l.specs),
+      l.image_url,
+      JSON.stringify(l.images),
+      l.video_url,
+      l.description,
+      JSON.stringify(l.features),
+      l.published,
+      l.marketing_status,
+      i
+    );
+  });
 }
 
-async function seedDefaultCampaigns() {
-  const campRow = await db
-    .prepare("SELECT COUNT(*) c FROM email_campaigns")
-    .get();
-  if (!campRow || campRow.c === 0) {
-    const insCampaign = db.prepare(`
-      INSERT INTO email_campaigns (title, subject, preheader, body, created_by)
-      VALUES (?, ?, ?, ?, ?)
-    `);
+// Ensure listing 1 uses the real ad creative image
+db.prepare(
+  "UPDATE listings SET image_url = ?, images_json = ? WHERE id = 1"
+).run(
+  "/images/m3m-urbana-ad.jpg",
+  JSON.stringify([
+    "/images/m3m-urbana-ad.jpg",
+    "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=1400&q=80",
+    "https://images.unsplash.com/photo-1519642918688-7e43b19245d8?auto=format&fit=crop&w=1400&q=80",
+  ])
+);
 
-    await insCampaign.run(
+// Seed default email templates for Brevo marketing if empty
+const campaignCount = db
+  .prepare("SELECT COUNT(*) c FROM email_campaigns")
+  .get().c;
+if (campaignCount === 0) {
+  const insCampaign = db.prepare(`
+    INSERT INTO email_campaigns (title, subject, preheader, body, created_by)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+
+  insCampaign.run(
     "High-Footfall Commercial Retail at M3M Urbana",
     "Commercial Investment Alert: Ground Floor Retail at M3M Urbana, Gurugram",
     "Double-height corner showroom with high pedestrian footfall and strong rental yields",
@@ -522,27 +450,32 @@ Providers Real Estate Advisory Team`,
     "Charul"
   );
 
-    await insCampaign.run(
-      "A Quiet Word from Providers Real Estate",
-      "Curated Opportunities in South Delhi & Gurugram — Quarterly Briefing",
-      "Off-market floors, prime retail and honest advice from a family-run advisory",
-      `Dear {{First_Name}},
+  insCampaign.run(
+    "Exclusive Off-Market Luxury Builder Floor in GK-1",
+    "Private Off-Market Briefing: Park-Facing 3 BHK in Greater Kailash I",
+    "Rare direct park-facing floor with stilt parking & Italian marble",
+    `Dear {{First_Name}},
 
-A short note from our family to yours. We keep our client list small on purpose, so a quick reminder of what we do and how we work:
+We are pleased to share a discreet, off-market acquisition opportunity in one of South Delhi's most sought-after enclaves — Greater Kailash I.
 
-• Curated builder floors and family homes across South Delhi colonies
-• Investment-grade retail and villas in Gurugram, often off-market
-• Honest price bands based on registered transactions — not portal hype
-• Every deal personally overseen by Vipul Agnihotri
+Property Highlights:
+• 1,850 sq. ft. built-up area overlooking lush park greenery
+• 3 Ensuite Bedrooms with walk-in wardrobes & powder room
+• Fully fitted German modular kitchen with built-in appliances
+• Italian marble flooring & VRV climate control
+• Schindler passenger elevator & dedicated double stilt parking
 
-If you, your family or a friend are considering a purchase, a sale or simply a second opinion, one call is all it takes.
+Price: ₹ 4.85 Cr (Strictly on private request)
+
+This floor has not been listed on public portals and is currently open for private viewings this week.
+
+Would you be available for a 20-minute private walkthrough this Thursday or Saturday?
 
 Warm regards,
 Vipul Agnihotri
 Principal Advisor | Providers Real Estate`,
-      "Charul"
-    );
-  }
+    "Charul"
+  );
 }
 
 /* ---------- team accounts ---------- */
@@ -554,43 +487,39 @@ const TEAM_ACCOUNTS = [
   { username: "rohan", name: "Rohan Agnihotri", role: "viewer" },
 ];
 
-async function seedTeamAccounts() {
-  const upsertTeamUser = db.prepare(`
-    INSERT INTO users (username, name, pass_hash, role) VALUES (?, ?, ?, ?)
-    ON CONFLICT (username) DO NOTHING
-  `);
-  for (const acct of TEAM_ACCOUNTS) {
-    await upsertTeamUser.run(
-      acct.username,
-      acct.name,
-      hashPassword(DEFAULT_TEAM_PASSWORD),
-      acct.role
-    );
-  }
-  await db
-    .prepare(`UPDATE users SET role = 'admin' WHERE username IN ('charul', 'vipul')`)
-    .run();
-  await db
-    .prepare(`UPDATE users SET role = 'viewer' WHERE username = 'rohan'`)
-    .run();
+const upsertTeamUser = db.prepare(`
+  INSERT OR IGNORE INTO users (username, name, pass_hash, role) VALUES (?, ?, ?, ?)
+`);
+for (const acct of TEAM_ACCOUNTS) {
+  upsertTeamUser.run(
+    acct.username,
+    acct.name,
+    hashPassword(DEFAULT_TEAM_PASSWORD),
+    acct.role
+  );
 }
+db.prepare(
+  `UPDATE users SET role = 'admin' WHERE username IN ('charul', 'vipul')`
+).run();
+db.prepare(`UPDATE users SET role = 'viewer' WHERE username = 'rohan'`).run();
 
 /* ---------- auth middleware ---------- */
-async function currentUser(req) {
+function currentUser(req) {
   const token = parseCookies(req).session;
   if (!token) return null;
-  const row = await db
-    .prepare(
-      `SELECT u.id, u.username, u.name, u.pass_hash, u.role
-       FROM sessions s JOIN users u ON u.id = s.user_id
-       WHERE s.token = ? AND s.expires_at > ?`
-    )
-    .get(token, Date.now());
-  return row || null;
+  return (
+    db
+      .prepare(
+        `SELECT u.id, u.username, u.name, u.pass_hash, u.role
+         FROM sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.token = ? AND s.expires_at > ?`
+      )
+      .get(token, Date.now()) || null
+  );
 }
 
-async function requireAuth(req, res, next) {
-  const user = await currentUser(req);
+function requireAuth(req, res, next) {
+  const user = currentUser(req);
   if (!user)
     return res.status(401).json({ ok: false, error: "Please sign in." });
   req.user = user;
@@ -608,8 +537,14 @@ function requireEditor(req, res, next) {
 
 /* ---------- media upload setup ---------- */
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB; Netlify functions cap requests at ~6MB, so keep photos under ~4MB in production
+  storage: multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || "").slice(0, 12);
+      cb(null, `${crypto.randomBytes(16).toString("hex")}${ext}`);
+    },
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB for high-res ad creatives & photos
 });
 
 /* ---------- page routes ---------- */
@@ -618,12 +553,12 @@ app.get("/login", (_req, res) => {
 });
 
 /* ---------- auth API ---------- */
-app.post("/api/login", async (req, res) => {
+app.post("/api/login", (req, res) => {
   const username = String((req.body && req.body.username) || "")
     .trim()
     .toLowerCase();
   const password = String((req.body && req.body.password) || "");
-  const user = await db
+  const user = db
     .prepare("SELECT * FROM users WHERE username = ?")
     .get(username);
   if (!user || !verifyPassword(password, user.pass_hash)) {
@@ -631,31 +566,26 @@ app.post("/api/login", async (req, res) => {
       .status(401)
       .json({ ok: false, error: "Incorrect username or password." });
   }
-  await db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(Date.now());
+  db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(Date.now());
   const token = crypto.randomBytes(32).toString("hex");
-  await db
-    .prepare(
-      "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)"
-    )
-    .run(token, user.id, Date.now() + SESSION_DAYS * 86400000);
-  const secure = req.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
+  db.prepare(
+    "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)"
+  ).run(token, user.id, Date.now() + SESSION_DAYS * 86400000);
   res.setHeader(
     "Set-Cookie",
-    `session=${token}; HttpOnly; Path=/; SameSite=Lax;${secure} Max-Age=${
+    `session=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${
       SESSION_DAYS * 86400
     }`
   );
   res.json({ ok: true, user: { name: user.name, role: user.role } });
 });
 
-app.post("/api/logout", async (req, res) => {
+app.post("/api/logout", (req, res) => {
   const token = parseCookies(req).session;
-  if (token)
-    await db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
-  const secure = req.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
+  if (token) db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
   res.setHeader(
     "Set-Cookie",
-    `session=; HttpOnly; Path=/; SameSite=Lax;${secure} Max-Age=0`
+    "session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0"
   );
   res.json({ ok: true });
 });
@@ -671,9 +601,9 @@ app.get("/api/admin/me", requireAuth, (req, res) => {
 });
 
 /* ---------- public listings ---------- */
-app.get("/api/listings", async (req, res) => {
+app.get("/api/listings", (req, res) => {
   const type = String(req.query.type || "all").toLowerCase();
-  let rows = await db
+  let rows = db
     .prepare(
       `SELECT * FROM listings WHERE published = 1 ORDER BY sort_order ASC, id DESC`
     )
@@ -965,41 +895,9 @@ function warnGeminiOnce(msg) {
   console.warn(`[Gemini] ${msg} The built-in concierge brain takes over automatically.`);
 }
 
-/* Gemini works with BOTH Google key formats today:
-   • "AIza…"  → Google AI Studio key      → generativelanguage.googleapis.com
-   • "AQ.…"   → Vertex AI express key     → aiplatform.googleapis.com
-                (the newer format Google hands out — starts with "AQ.")
-   Both endpoints speak the same request/response shape; only the URL and
-   auth header differ. Returns null for any other key format. */
-function geminiEndpointConfig() {
-  const key = process.env.GEMINI_API_KEY || "";
-  if (key.startsWith("AIza")) {
-    return {
-      url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(key)}`,
-      headers: {},
-      kind: "Google AI Studio",
-    };
-  }
-  if (key.startsWith("AQ.")) {
-    return {
-      url: "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:generateContent",
-      headers: { "x-goog-api-key": key },
-      kind: "Vertex AI express",
-    };
-  }
-  return null;
-}
-
 async function geminiChatIfConfigured(messages, listings) {
-  const cfg = geminiEndpointConfig();
-  if (!cfg) {
-    const key = process.env.GEMINI_API_KEY || "";
-    if (key)
-      warnGeminiOnce(
-        `GEMINI_API_KEY format looks wrong (starts with "${key.slice(0, 3)}"). Google Gemini keys start with "AIza" (AI Studio) or "AQ." (Vertex AI express).`
-      );
-    return null;
-  }
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) return null;
 
   const catalog = listings.map((l) => ({
     id: l.id,
@@ -1053,10 +951,13 @@ Conversation rules (follow strictly):
     });
   }
 
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(
+    key
+  )}`;
   try {
-    const r = await fetch(cfg.url, {
+    const r = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...cfg.headers },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents,
         generationConfig: { temperature: 0.4, maxOutputTokens: 350 },
@@ -1065,10 +966,10 @@ Conversation rules (follow strictly):
     if (!r.ok) {
       if (r.status === 400) {
         warnGeminiOnce(
-          `HTTP 400 — the GEMINI_API_KEY in your .env looks invalid. Re-copy it (${cfg.kind} keys start with "${cfg.kind === "Vertex AI express" ? "AQ." : "AIza"}").`
+          `HTTP 400 — the GEMINI_API_KEY in your .env looks invalid. Re-copy it from Google AI Studio (it should start with "AIza").`
         );
       } else if (r.status === 403) {
-        warnGeminiOnce(`HTTP 403 — key rejected. Generate a fresh key in Google AI Studio or your Google Cloud console.`);
+        warnGeminiOnce(`HTTP 403 — key rejected. Generate a fresh key in Google AI Studio.`);
       } else if (r.status === 429) {
         geminiFailureLogged = false; // quota resets — log again on the next burst
         warnGeminiOnce(`HTTP 429 — free-tier quota exhausted for now.`);
@@ -1095,13 +996,12 @@ app.post("/api/chat", async (req, res) => {
     messages.push({ role: "user", content: req.body.message });
   }
 
-  const listings = (
-    await db
-      .prepare(
-        `SELECT * FROM listings WHERE published = 1 ORDER BY sort_order ASC, id DESC`
-      )
-      .all()
-  ).map(rowToPublicListing);
+  const listings = db
+    .prepare(
+      `SELECT * FROM listings WHERE published = 1 ORDER BY sort_order ASC, id DESC`
+    )
+    .all()
+    .map(rowToPublicListing);
 
   const lastUserMsg =
     messages.slice().reverse().find((m) => m.role === "user")?.content || "";
@@ -1230,25 +1130,22 @@ function ruleBasedRecommend(answers, listings) {
 
 app.post("/api/explorer/recommend", async (req, res) => {
   const answers = req.body || {};
-  const listings = (
-    await db
-      .prepare(
-        `SELECT * FROM listings WHERE published = 1 ORDER BY sort_order ASC, id DESC`
-      )
-      .all()
-  ).map(rowToPublicListing);
+  const listings = db
+    .prepare(
+      `SELECT * FROM listings WHERE published = 1 ORDER BY sort_order ASC, id DESC`
+    )
+    .all()
+    .map(rowToPublicListing);
 
   const result = ruleBasedRecommend(answers, listings);
 
   // Auto-log exploratory lead in CRM
   try {
     if (answers.name || answers.phone || answers.email) {
-      await db
-        .prepare(
-          `INSERT INTO leads (name, phone, email, interest, message, source)
-           VALUES (?, ?, ?, ?, ?, ?)`
-        )
-        .run(
+      db.prepare(
+        `INSERT INTO leads (name, phone, email, interest, message, source)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(
         String(answers.name || "Explorer User").slice(0, 120),
         answers.phone ? digits(answers.phone) : "",
         String(answers.email || "").slice(0, 160),
@@ -1265,41 +1162,38 @@ app.post("/api/explorer/recommend", async (req, res) => {
 });
 
 /* ---------- admin: overview & stats ---------- */
-app.get("/api/admin/stats", requireAuth, async (req, res) => {
-  const totalLeads = (
-    await db.prepare("SELECT COUNT(*) c FROM leads").get()
-  ).c;
-  const monthLeads = (
-    await db
-      .prepare(`SELECT COUNT(*) c FROM leads WHERE created_at >= ?`)
-      .get(monthStartStr())
-  ).c;
+app.get("/api/admin/stats", requireAuth, (req, res) => {
+  const totalLeads = db.prepare("SELECT COUNT(*) c FROM leads").get().c;
+  const monthLeads = db
+    .prepare(
+      `SELECT COUNT(*) c FROM leads
+       WHERE created_at >= datetime('now','localtime','start of month')`
+    )
+    .get().c;
 
   const byStatus = {};
-  for (const r of await db
+  for (const r of db
     .prepare("SELECT status, COUNT(*) c FROM leads GROUP BY status")
     .all()) {
     byStatus[r.status] = r.c;
   }
 
-  const liveListings = (
-    await db
-      .prepare("SELECT COUNT(*) c FROM listings WHERE published = 1")
-      .get()
-  ).c;
-  const totalListings = (
-    await db.prepare("SELECT COUNT(*) c FROM listings").get()
-  ).c;
+  const liveListings = db
+    .prepare("SELECT COUNT(*) c FROM listings WHERE published = 1")
+    .get().c;
+  const totalListings = db
+    .prepare("SELECT COUNT(*) c FROM listings")
+    .get().c;
 
-  const scheduledVisits = (
-    await db
-      .prepare("SELECT COUNT(*) c FROM site_visits WHERE status = 'scheduled'")
-      .get()
-  ).c;
+  const scheduledVisits = db
+    .prepare(
+      "SELECT COUNT(*) c FROM site_visits WHERE status = 'scheduled'"
+    )
+    .get().c;
 
-  const totalCampaigns = (
-    await db.prepare("SELECT COUNT(*) c FROM email_campaigns").get()
-  ).c;
+  const totalCampaigns = db
+    .prepare("SELECT COUNT(*) c FROM email_campaigns")
+    .get().c;
 
   res.json({
     ok: true,
@@ -1314,21 +1208,21 @@ app.get("/api/admin/stats", requireAuth, async (req, res) => {
 });
 
 /* ---------- admin: leads CRM ---------- */
-app.get("/api/admin/leads", requireAuth, async (req, res) => {
-  const leads = await db
-    .prepare("SELECT * FROM leads ORDER BY id DESC")
-    .all();
-  res.json({ ok: true, leads });
+app.get("/api/admin/leads", requireAuth, (req, res) => {
+  res.json({
+    ok: true,
+    leads: db.prepare("SELECT * FROM leads ORDER BY id DESC").all(),
+  });
 });
 
-app.post("/api/admin/leads", requireAuth, requireEditor, async (req, res) => {
+app.post("/api/admin/leads", requireAuth, requireEditor, (req, res) => {
   const b = req.body || {};
   if (!b.name && !b.phone && !b.email) {
     return res
       .status(400)
       .json({ ok: false, error: "Please provide a name, phone, or email." });
   }
-  const r = await db
+  const r = db
     .prepare(
       `INSERT INTO leads (name, phone, email, interest, message, source, status, notes, assigned_to)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -1351,8 +1245,8 @@ app.post("/api/admin/leads", requireAuth, requireEditor, async (req, res) => {
   res.json({ ok: true, id: r.lastInsertRowid });
 });
 
-app.patch("/api/admin/leads/:id", requireAuth, requireEditor, async (req, res) => {
-  const lead = await db
+app.patch("/api/admin/leads/:id", requireAuth, requireEditor, (req, res) => {
+  const lead = db
     .prepare("SELECT id FROM leads WHERE id = ?")
     .get(req.params.id);
   if (!lead)
@@ -1389,20 +1283,18 @@ app.patch("/api/admin/leads/:id", requireAuth, requireEditor, async (req, res) =
     return res.status(400).json({ ok: false, error: "Nothing to update." });
 
   vals.push(lead.id);
-  await db
-    .prepare(`UPDATE leads SET ${fields.join(", ")} WHERE id = ?`)
-    .run(...vals);
+  db.prepare(`UPDATE leads SET ${fields.join(", ")} WHERE id = ?`).run(...vals);
   res.json({ ok: true });
 });
 
-app.delete("/api/admin/leads/:id", requireAuth, requireEditor, async (req, res) => {
-  await db.prepare("DELETE FROM leads WHERE id = ?").run(req.params.id);
+app.delete("/api/admin/leads/:id", requireAuth, requireEditor, (req, res) => {
+  db.prepare("DELETE FROM leads WHERE id = ?").run(req.params.id);
   logActivity(req.user, "lead", Number(req.params.id), "deleted", {});
   res.json({ ok: true });
 });
 
-app.get("/api/admin/leads.csv", requireAuth, async (req, res) => {
-  const leads = await db.prepare("SELECT * FROM leads ORDER BY id DESC").all();
+app.get("/api/admin/leads.csv", requireAuth, (req, res) => {
+  const leads = db.prepare("SELECT * FROM leads ORDER BY id DESC").all();
   const csv = [
     "Date,Name,Phone,Email,Interest,Source,Status,Assigned To,Notes,Message",
     ...leads.map((l) =>
@@ -1427,8 +1319,8 @@ app.get("/api/admin/leads.csv", requireAuth, async (req, res) => {
   res.send(csv);
 });
 
-app.get("/api/admin/listings.csv", requireAuth, async (req, res) => {
-  const listings = await db
+app.get("/api/admin/listings.csv", requireAuth, (req, res) => {
+  const listings = db
     .prepare("SELECT * FROM listings ORDER BY id ASC")
     .all();
   const csv = [
@@ -1463,14 +1355,14 @@ app.get("/api/admin/listings.csv", requireAuth, async (req, res) => {
 });
 
 /* ---------- admin: listings & inventory ---------- */
-app.get("/api/admin/listings", requireAuth, async (req, res) => {
-  const listings = await db
+app.get("/api/admin/listings", requireAuth, (req, res) => {
+  const listings = db
     .prepare("SELECT * FROM listings ORDER BY sort_order ASC, id DESC")
     .all();
   res.json({ ok: true, listings });
 });
 
-app.post("/api/admin/listings", requireAuth, requireEditor, async (req, res) => {
+app.post("/api/admin/listings", requireAuth, requireEditor, (req, res) => {
   const b = req.body || {};
   if (!String(b.title || "").trim()) {
     return res.status(400).json({ ok: false, error: "Title is required." });
@@ -1511,7 +1403,7 @@ app.post("/api/admin/listings", requireAuth, requireEditor, async (req, res) => 
       ? 1
       : 0;
 
-  const r = await db
+  const r = db
     .prepare(
       `INSERT INTO listings (
         title, location, property_type, listing_type, badge, price, specs_json,
@@ -1548,8 +1440,8 @@ app.post("/api/admin/listings", requireAuth, requireEditor, async (req, res) => 
   res.json({ ok: true, id: r.lastInsertRowid });
 });
 
-app.patch("/api/admin/listings/:id", requireAuth, requireEditor, async (req, res) => {
-  const row = await db
+app.patch("/api/admin/listings/:id", requireAuth, requireEditor, (req, res) => {
+  const row = db
     .prepare("SELECT * FROM listings WHERE id = ?")
     .get(req.params.id);
   if (!row)
@@ -1634,27 +1526,30 @@ app.patch("/api/admin/listings/:id", requireAuth, requireEditor, async (req, res
   if (!fields.length)
     return res.status(400).json({ ok: false, error: "Nothing to update." });
 
-  fields.push(`updated_at = ?`);
-  vals.push(nowStr());
+  fields.push(`updated_at = datetime('now','localtime')`);
   vals.push(row.id);
-  await db
-    .prepare(`UPDATE listings SET ${fields.join(", ")} WHERE id = ?`)
-    .run(...vals);
+  db.prepare(`UPDATE listings SET ${fields.join(", ")} WHERE id = ?`).run(
+    ...vals
+  );
   logActivity(req.user, "listing", row.id, "updated", b);
   res.json({ ok: true });
 });
 
-app.delete("/api/admin/listings/:id", requireAuth, requireEditor, async (req, res) => {
-  const assets = await db
+app.delete("/api/admin/listings/:id", requireAuth, requireEditor, (req, res) => {
+  const assets = db
     .prepare("SELECT stored_name FROM listing_assets WHERE listing_id = ?")
     .all(req.params.id);
   for (const a of assets) {
-    await deleteStoredFile(a.stored_name);
+    try {
+      fs.unlinkSync(path.join(UPLOAD_DIR, a.stored_name));
+    } catch {
+      /* ignore */
+    }
   }
-  await db
-    .prepare("DELETE FROM listing_assets WHERE listing_id = ?")
-    .run(req.params.id);
-  await db.prepare("DELETE FROM listings WHERE id = ?").run(req.params.id);
+  db.prepare("DELETE FROM listing_assets WHERE listing_id = ?").run(
+    req.params.id
+  );
+  db.prepare("DELETE FROM listings WHERE id = ?").run(req.params.id);
   logActivity(req.user, "listing", Number(req.params.id), "deleted", {});
   res.json({ ok: true });
 });
@@ -1665,28 +1560,18 @@ app.post(
   requireAuth,
   requireEditor,
   upload.single("file"),
-  async (req, res) => {
+  (req, res) => {
     if (!req.file)
       return res.status(400).json({ ok: false, error: "No file uploaded." });
-    try {
-      const saved = await saveUpload(
-        req.file.buffer,
-        req.file.originalname,
-        req.file.mimetype
-      );
-      res.json({
-        ok: true,
-        url: saved.url,
-        filename: saved.storedName,
-        originalName: req.file.originalname,
-        mimetype: req.file.mimetype,
-        size: req.file.size,
-      });
-    } catch (err) {
-      res
-        .status(500)
-        .json({ ok: false, error: err.message || "Upload failed." });
-    }
+    const fileUrl = `/uploads/${req.file.filename}`;
+    res.json({
+      ok: true,
+      url: fileUrl,
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+    });
   }
 );
 
@@ -1695,40 +1580,30 @@ app.post(
   requireAuth,
   requireEditor,
   upload.array("files", 25),
-  async (req, res) => {
+  (req, res) => {
     if (!req.files || !req.files.length) {
       return res.status(400).json({ ok: false, error: "No files uploaded." });
     }
-    try {
-      const uploaded = [];
-      for (const f of req.files) {
-        const saved = await saveUpload(f.buffer, f.originalname, f.mimetype);
-        uploaded.push({
-          url: saved.url,
-          filename: saved.storedName,
-          originalName: f.originalname,
-          mimetype: f.mimetype,
-          size: f.size,
-        });
-      }
-      res.json({ ok: true, files: uploaded });
-    } catch (err) {
-      res
-        .status(500)
-        .json({ ok: false, error: err.message || "Upload failed." });
-    }
+    const uploaded = req.files.map((f) => ({
+      url: `/uploads/${f.filename}`,
+      filename: f.filename,
+      originalName: f.originalname,
+      mimetype: f.mimetype,
+      size: f.size,
+    }));
+    res.json({ ok: true, files: uploaded });
   }
 );
 
 /* ---------- admin: site visits scheduler ---------- */
-app.get("/api/admin/site-visits", requireAuth, async (req, res) => {
-  const visits = await db
+app.get("/api/admin/site-visits", requireAuth, (req, res) => {
+  const visits = db
     .prepare("SELECT * FROM site_visits ORDER BY visit_date ASC, id DESC")
     .all();
   res.json({ ok: true, visits });
 });
 
-app.post("/api/admin/site-visits", requireAuth, requireEditor, async (req, res) => {
+app.post("/api/admin/site-visits", requireAuth, requireEditor, (req, res) => {
   const b = req.body || {};
   if (!b.client_name || !b.visit_date) {
     return res
@@ -1736,7 +1611,7 @@ app.post("/api/admin/site-visits", requireAuth, requireEditor, async (req, res) 
       .json({ ok: false, error: "Client name and visit date are required." });
   }
 
-  const r = await db
+  const r = db
     .prepare(
       `INSERT INTO site_visits (client_name, client_phone, client_email, property_title, visit_date, visit_time, status, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
@@ -1763,7 +1638,7 @@ app.patch(
   "/api/admin/site-visits/:id",
   requireAuth,
   requireEditor,
-  async (req, res) => {
+  (req, res) => {
     const b = req.body || {};
     const fields = [];
     const vals = [];
@@ -1781,9 +1656,9 @@ app.patch(
       return res.status(400).json({ ok: false, error: "Nothing to update." });
 
     vals.push(req.params.id);
-    await db
-      .prepare(`UPDATE site_visits SET ${fields.join(", ")} WHERE id = ?`)
-      .run(...vals);
+    db.prepare(`UPDATE site_visits SET ${fields.join(", ")} WHERE id = ?`).run(
+      ...vals
+    );
     res.json({ ok: true });
   }
 );
@@ -1792,21 +1667,21 @@ app.delete(
   "/api/admin/site-visits/:id",
   requireAuth,
   requireEditor,
-  async (req, res) => {
-    await db.prepare("DELETE FROM site_visits WHERE id = ?").run(req.params.id);
+  (req, res) => {
+    db.prepare("DELETE FROM site_visits WHERE id = ?").run(req.params.id);
     res.json({ ok: true });
   }
 );
 
 /* ---------- admin: email marketing campaigns (Brevo) ---------- */
-app.get("/api/admin/email-campaigns", requireAuth, async (req, res) => {
-  const campaigns = await db
+app.get("/api/admin/email-campaigns", requireAuth, (req, res) => {
+  const campaigns = db
     .prepare("SELECT * FROM email_campaigns ORDER BY id DESC")
     .all();
   res.json({ ok: true, campaigns });
 });
 
-app.post("/api/admin/email-campaigns", requireAuth, requireEditor, async (req, res) => {
+app.post("/api/admin/email-campaigns", requireAuth, requireEditor, (req, res) => {
   const b = req.body || {};
   if (!b.subject || !b.body) {
     return res
@@ -1814,7 +1689,7 @@ app.post("/api/admin/email-campaigns", requireAuth, requireEditor, async (req, r
       .json({ ok: false, error: "Subject line and main body are required." });
   }
 
-  const r = await db
+  const r = db
     .prepare(
       `INSERT INTO email_campaigns (title, subject, preheader, body, created_by)
        VALUES (?, ?, ?, ?, ?)`
@@ -1837,18 +1712,16 @@ app.delete(
   "/api/admin/email-campaigns/:id",
   requireAuth,
   requireEditor,
-  async (req, res) => {
-    await db
-      .prepare("DELETE FROM email_campaigns WHERE id = ?")
-      .run(req.params.id);
+  (req, res) => {
+    db.prepare("DELETE FROM email_campaigns WHERE id = ?").run(req.params.id);
     res.json({ ok: true });
   }
 );
 
 /* ---------- admin: AI email copywriter (free Gemini tier) ---------- */
 function geminiEmailIfConfigured({ brief, listing, tone }) {
-  const cfg = geminiEndpointConfig();
-  if (!cfg) return null;
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) return null;
 
   const toneText =
     tone === "urgent"
@@ -1886,9 +1759,12 @@ Rules for the JSON:
 - preheader: 80-110 characters, complements the subject, inbox preview line.
 - body: plain text (\\n for line breaks, blank line between paragraphs). 140-220 words. Structure: personalised opening line → 3-5 value bullets (lines starting with "• ") → a single clear call-to-action (reply, call, or private viewing) → sign-off "Warm regards,\\nVipul Agnihotri\\nPrincipal Advisor | Providers Real Estate\\n+91 98103 33886". Do NOT include the company footer, unsubscribe lines, or the subject inside the body.`;
 
-  return fetch(cfg.url, {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(
+    key
+  )}`;
+  return fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...cfg.headers },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       contents: [{ role: "user", parts: [{ text: system }] }],
       generationConfig: { temperature: 0.7, maxOutputTokens: 900 },
@@ -1927,7 +1803,7 @@ app.post("/api/admin/ai-email", requireAuth, requireEditor, async (req, res) => 
 
   let listing = null;
   if (listingId) {
-    const row = await db
+    const row = db
       .prepare("SELECT * FROM listings WHERE id = ?")
       .get(listingId);
     if (row) listing = rowToPublicListing(row);
@@ -1937,18 +1813,16 @@ app.post("/api/admin/ai-email", requireAuth, requireEditor, async (req, res) => 
     return res.status(400).json({
       ok: false,
       error:
-        "GEMINI_API_KEY is not set. Add GEMINI_API_KEY=your_key to the .env file in the project folder and restart the server. Both AI Studio keys (AIza…) and Vertex AI express keys (AQ.…) work.",
+        "GEMINI_API_KEY is not set. Add GEMINI_API_KEY=your_key to the .env file in the project folder and restart the server.",
     });
   }
 
   const result = await geminiEmailIfConfigured({ brief, listing, tone });
   if (!result) {
-    const key = process.env.GEMINI_API_KEY || "";
     return res.status(502).json({
       ok: false,
-      error: !/^(AIza|AQ\.)/.test(key)
-        ? `The GEMINI_API_KEY in .env starts with "${key.slice(0, 3)}" — Google Gemini keys start with "AIza" (AI Studio) or "AQ." (Vertex AI express). Fix the key and restart the server.`
-        : "Gemini did not return usable copy (quota or network). Please try again in a moment.",
+      error:
+        "Gemini did not return usable copy (quota or network). Please try again in a moment.",
     });
   }
 
@@ -1959,9 +1833,94 @@ app.post("/api/admin/ai-email", requireAuth, requireEditor, async (req, res) => 
   res.json({ ok: true, ...result });
 });
 
-/* ---------- admin: Brevo integration status ---------- */
+/* ---------- admin: Brevo integration & direct email sending ---------- */
+function getBrevoConfig() {
+  let dbKey = "";
+  let dbSender = "";
+  let dbSenderName = "";
+  try {
+    dbKey = db.prepare("SELECT value FROM app_settings WHERE key = 'brevo_api_key'").get()?.value || "";
+    dbSender = db.prepare("SELECT value FROM app_settings WHERE key = 'brevo_sender_email'").get()?.value || "";
+    dbSenderName = db.prepare("SELECT value FROM app_settings WHERE key = 'brevo_sender_name'").get()?.value || "";
+  } catch {
+    /* fallback if table is not yet migrated */
+  }
+
+  const key = process.env.BREVO_API_KEY || dbKey || "";
+  const senderEmail = process.env.BREVO_SENDER_EMAIL || dbSender || "vipulproviders@gmail.com";
+  const senderName = process.env.BREVO_SENDER_NAME || dbSenderName || "Providers Real Estate";
+
+  return { key, senderEmail, senderName };
+}
+
 app.get("/api/admin/brevo-status", requireAuth, (req, res) => {
-  res.json({ ok: true, configured: Boolean(process.env.BREVO_API_KEY) });
+  const { key, senderEmail, senderName } = getBrevoConfig();
+  const configured = Boolean(key);
+  const maskedKey = configured
+    ? (key.length > 10 ? `${key.slice(0, 8)}••••••••${key.slice(-4)}` : "••••••••")
+    : "";
+  res.json({
+    ok: true,
+    configured,
+    senderEmail,
+    senderName,
+    maskedKey,
+  });
+});
+
+app.post("/api/admin/brevo-config", requireAuth, requireEditor, async (req, res) => {
+  const { apiKey, senderEmail, senderName } = req.body || {};
+  
+  if (apiKey !== undefined && String(apiKey).trim()) {
+    db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at) VALUES ('brevo_api_key', ?, datetime('now','localtime'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(String(apiKey).trim());
+  }
+  if (senderEmail !== undefined && String(senderEmail).trim()) {
+    db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at) VALUES ('brevo_sender_email', ?, datetime('now','localtime'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(String(senderEmail).trim());
+  }
+  if (senderName !== undefined && String(senderName).trim()) {
+    db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at) VALUES ('brevo_sender_name', ?, datetime('now','localtime'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(String(senderName).trim());
+  }
+
+  const cfg = getBrevoConfig();
+  if (cfg.key) {
+    try {
+      const resp = await fetch("https://api.brevo.com/v3/account", {
+        headers: { "api-key": cfg.key },
+      });
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        return res.status(400).json({
+          ok: false,
+          error: errData.message || "Brevo rejected this API key. Please check your key at brevo.com.",
+        });
+      }
+      const acct = await resp.json();
+      logActivity(req.user, "settings", null, "brevo_configured", { email: acct.email });
+      return res.json({
+        ok: true,
+        message: `Successfully connected to Brevo account: ${acct.email}`,
+        accountEmail: acct.email,
+        senderEmail: cfg.senderEmail,
+        senderName: cfg.senderName,
+      });
+    } catch (e) {
+      return res.status(500).json({
+        ok: false,
+        error: "Network error connecting to Brevo: " + e.message,
+      });
+    }
+  }
+
+  res.json({ ok: true, message: "Configuration saved." });
 });
 
 app.post(
@@ -1970,12 +1929,13 @@ app.post(
   requireEditor,
   async (req, res) => {
     const { apiKey, recipientEmail, subject, htmlContent } = req.body || {};
-    const key = apiKey || process.env.BREVO_API_KEY;
+    const cfg = getBrevoConfig();
+    const key = apiKey || cfg.key;
     if (!key) {
       return res.status(400).json({
         ok: false,
         error:
-          "Brevo API key is required. Paste it once below (xkeysib-…) or set BREVO_API_KEY in .env.",
+          "Brevo API key is required. Paste it once in the field below or configure it in the dashboard.",
       });
     }
 
@@ -2006,8 +1966,8 @@ app.post(
         },
         body: JSON.stringify({
           sender: {
-            name: "Providers Real Estate",
-            email: process.env.BREVO_SENDER_EMAIL || "vipulproviders@gmail.com",
+            name: cfg.senderName || "Providers Real Estate",
+            email: cfg.senderEmail || "vipulproviders@gmail.com",
           },
           to: recipients.map((e) => ({ email: e })),
           subject: subject || "Providers Real Estate — Luxury Portfolio",
@@ -2036,9 +1996,158 @@ app.post(
   }
 );
 
+/* Direct Campaign Broadcast to Client Recipients via Brevo */
+app.post(
+  "/api/admin/brevo/send",
+  requireAuth,
+  requireEditor,
+  async (req, res) => {
+    const { recipients, subject, htmlContent, campaignTitle, apiKey } = req.body || {};
+    const cfg = getBrevoConfig();
+    const key = apiKey || cfg.key;
+
+    if (!key) {
+      return res.status(400).json({
+        ok: false,
+        error: "Brevo API key is not configured. Please configure your Brevo API key under 'Configure Brevo Key' first.",
+      });
+    }
+
+    // Parse recipients list
+    let rawList = [];
+    if (Array.isArray(recipients)) {
+      rawList = recipients.map((e) => String(e).trim()).filter(Boolean);
+    } else {
+      rawList = String(recipients || "")
+        .split(/[\r\n,;]+/)
+        .map((e) => e.trim())
+        .filter(Boolean);
+    }
+
+    // Deduplicate
+    const seen = new Set();
+    const cleanRecipients = [];
+    for (const email of rawList) {
+      const lower = email.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        cleanRecipients.push(email);
+      }
+    }
+
+    if (!cleanRecipients.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "Please enter at least one recipient email address.",
+      });
+    }
+
+    const invalid = cleanRecipients.filter((e) => !isValidEmail(e));
+    if (invalid.length) {
+      return res.status(400).json({
+        ok: false,
+        error: `Invalid email address(es): ${invalid.slice(0, 5).join(", ")}${
+          invalid.length > 5 ? ` and ${invalid.length - 5} more` : ""
+        }`,
+      });
+    }
+
+    if (!subject) {
+      return res.status(400).json({ ok: false, error: "Subject line is required." });
+    }
+    if (!htmlContent) {
+      return res.status(400).json({ ok: false, error: "Email body content is required." });
+    }
+
+    // Match client names from CRM leads for discrete personal salutations
+    const allLeads = db
+      .prepare("SELECT name, email FROM leads WHERE email IS NOT NULL AND email != ''")
+      .all();
+    const nameByEmail = new Map();
+    for (const l of allLeads) {
+      if (l.email && l.name) {
+        nameByEmail.set(l.email.toLowerCase().trim(), l.name.trim());
+      }
+    }
+
+    const results = {
+      total: cleanRecipients.length,
+      sent: 0,
+      failed: [],
+      messageIds: [],
+    };
+
+    const senderEmail = req.body.senderEmail || cfg.senderEmail || "vipulproviders@gmail.com";
+    const senderName = req.body.senderName || cfg.senderName || "Providers Real Estate";
+
+    // Send individual personalized emails so recipients never see each other's addresses
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < cleanRecipients.length; i += BATCH_SIZE) {
+      const chunk = cleanRecipients.slice(i, i + BATCH_SIZE);
+      await Promise.all(
+        chunk.map(async (email) => {
+          const clientName = nameByEmail.get(email.toLowerCase()) || "";
+          let customizedHtml = htmlContent;
+          if (clientName) {
+            const firstName = clientName.split(/\s+/)[0];
+            customizedHtml = customizedHtml.replace(/\{\{First_Name\}\}/g, firstName);
+          } else {
+            customizedHtml = customizedHtml.replace(/\{\{First_Name\}\}/g, "Client");
+          }
+
+          try {
+            const brevoResp = await fetch("https://api.brevo.com/v3/smtp/email", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "api-key": key,
+              },
+              body: JSON.stringify({
+                sender: { name: senderName, email: senderEmail },
+                to: [{ email, name: clientName || undefined }],
+                subject: subject,
+                htmlContent: customizedHtml,
+              }),
+            });
+
+            const data = await brevoResp.json();
+            if (brevoResp.ok) {
+              results.sent++;
+              if (data.messageId) results.messageIds.push(data.messageId);
+            } else {
+              results.failed.push({ email, error: data.message || "Failed to send" });
+            }
+          } catch (err) {
+            results.failed.push({ email, error: err.message || "Network error" });
+          }
+        })
+      );
+    }
+
+    logActivity(req.user, "email_campaign", null, "campaign_sent", {
+      title: campaignTitle || subject,
+      total: cleanRecipients.length,
+      sent: results.sent,
+      failed: results.failed.length,
+    });
+
+    return res.json({
+      ok: results.sent > 0,
+      total: results.total,
+      sentCount: results.sent,
+      failedCount: results.failed.length,
+      failedList: results.failed,
+      message:
+        results.sent === results.total
+          ? `🎉 Successfully sent email to all ${results.sent} recipient${results.sent === 1 ? "" : "s"} via Brevo!`
+          : `Sent to ${results.sent} of ${results.total} recipients. (${results.failed.length} failed)`,
+    });
+  }
+);
+
 /* ---------- admin: reminders & activity ---------- */
-app.get("/api/admin/reminders", requireAuth, async (req, res) => {
-  const rows = await db
+app.get("/api/admin/reminders", requireAuth, (req, res) => {
+  const rows = db
     .prepare(
       `SELECT id, title, follow_up_at, follow_up_note, marketing_status
        FROM listings
@@ -2049,15 +2158,15 @@ app.get("/api/admin/reminders", requireAuth, async (req, res) => {
   res.json({ ok: true, reminders: rows });
 });
 
-app.get("/api/admin/activity", requireAuth, async (req, res) => {
+app.get("/api/admin/activity", requireAuth, (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 80, 200);
-  const rows = await db
+  const rows = db
     .prepare(`SELECT * FROM activity_log ORDER BY id DESC LIMIT ${limit}`)
     .all();
   res.json({ ok: true, activity: rows });
 });
 
-app.post("/api/admin/password", requireAuth, async (req, res) => {
+app.post("/api/admin/password", requireAuth, (req, res) => {
   const { current, next } = req.body || {};
   if (!verifyPassword(String(current || ""), req.user.pass_hash)) {
     return res
@@ -2070,14 +2179,15 @@ app.post("/api/admin/password", requireAuth, async (req, res) => {
       error: "New password must be at least 8 characters.",
     });
   }
-  await db
-    .prepare("UPDATE users SET pass_hash = ? WHERE id = ?")
-    .run(hashPassword(next), req.user.id);
+  db.prepare("UPDATE users SET pass_hash = ? WHERE id = ?").run(
+    hashPassword(next),
+    req.user.id
+  );
   res.json({ ok: true });
 });
 
 /* ---------- public: lead capture ---------- */
-app.post("/api/leads", async (req, res) => {
+app.post("/api/leads", (req, res) => {
   const b = req.body || {};
   if (b.company) return res.json({ ok: true }); // honeypot
   if (!b.phone && !b.email) {
@@ -2097,7 +2207,7 @@ app.post("/api/leads", async (req, res) => {
       .json({ ok: false, error: "Please enter a valid email address." });
   }
 
-  const r = await db
+  const r = db
     .prepare(
       `INSERT INTO leads (name, phone, email, interest, message, source, status, assigned_to)
        VALUES (?, ?, ?, ?, ?, ?, 'new', 'Vipul')`
@@ -2122,60 +2232,24 @@ app.post("/api/leads", async (req, res) => {
 /* ---------- static files last ---------- */
 app.use(express.static(PUBLIC_DIR));
 
-/* ---------- start ---------- */
 const PORT = process.env.PORT || 3000;
-
-/* A single failed request must never take the whole website down.
-   (Async routes that hit a database error used to crash Node — this keeps
-   the site alive and logs the problem instead.) */
-process.on("unhandledRejection", (err) => {
-  console.error("[Background error kept the site alive:]", err && err.message ? err.message : err);
+app.listen(PORT, () => {
+  console.log(`Providers Real Estate → http://localhost:${PORT}`);
+  console.log(`Site: /  ·  Login: /login or /login.html  ·  Dashboard: /admin`);
+  console.log(
+    `Team: ${TEAM_ACCOUNTS.map((a) => `${a.username} (${a.role})`).join(", ")}`
+  );
+  const key = process.env.GEMINI_API_KEY;
+  if (key) {
+    const looksValid = /^AIza[\w-]{20,}$/.test(key);
+    console.log(
+      `AI Concierge: Gemini API (gemini-2.0-flash) — key loaded${
+        looksValid ? "" : " ⚠️ key format looks wrong (expected to start with AIza…)"
+      }`
+    );
+  } else {
+    console.log(
+      `AI Concierge: Built-in brain (free, no key). To enable Gemini, create a .env file NEXT TO server.js containing: GEMINI_API_KEY=your_key`
+    );
+  }
 });
-
-if (require.main === module) {
-  (async () => {
-    try {
-      await initDb();
-    } catch (err) {
-      console.error("\nDatabase initialisation failed:", err.message);
-      process.exit(1);
-    }
-    if (USE_CLOUD_STORAGE) await ensureBucket();
-    ensureUploadDir(); // local runs pre-create data/uploads; no-op on read-only FS
-    app.listen(PORT, () => {
-      console.log(`Providers Real Estate → http://localhost:${PORT}`);
-      console.log(`Site: /  ·  Login: /login or /login.html  ·  Dashboard: /admin`);
-      console.log(
-        `Team: ${TEAM_ACCOUNTS.map((a) => `${a.username} (${a.role})`).join(", ")}`
-      );
-      console.log(
-        `Database: Supabase Postgres — photos → ${
-          USE_CLOUD_STORAGE
-            ? `Supabase Storage: ${storageNote}`
-            : "local disk (data/uploads) — add SUPABASE_URL + SUPABASE_SERVICE_KEY to .env for cloud photos"
-        }`
-      );
-      if (USE_CLOUD_STORAGE && !bucketOk) {
-        console.log(
-          `⚠ Photo storage heads-up: ${storageNote}. Until it's fixed, new photos are saved on this computer (data/uploads) — they will NOT appear on the deployed site.`
-        );
-      }
-      const key = process.env.GEMINI_API_KEY;
-      if (key) {
-        const aiStudio = key.startsWith("AIza");
-        const vertexExpress = key.startsWith("AQ.");
-        console.log(
-          aiStudio || vertexExpress
-            ? `AI Concierge: Gemini API (gemini-2.0-flash) — key loaded (${vertexExpress ? "Vertex AI express" : "AI Studio"} format)`
-            : `AI Concierge: built-in brain (the GEMINI_API_KEY in .env starts with "${key.slice(0, 3)}" — that is not a Gemini key). Gemini keys start with "AIza" (aistudio.google.com/apikey) or "AQ." (Vertex AI express), or delete the line to use the built-in brain.`
-        );
-      } else {
-        console.log(
-          `AI Concierge: Built-in brain (free, no key). To enable Gemini, create a .env file NEXT TO server.js containing: GEMINI_API_KEY=your_key`
-        );
-      }
-    });
-  })();
-}
-
-module.exports = { app, initDb, db };

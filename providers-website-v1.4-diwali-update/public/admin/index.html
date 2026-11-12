@@ -255,7 +255,7 @@
             <div>
               <h2 class="serif">Email Campaign Studio</h2>
               <p class="panel-sub">
-                Brand-matched luxury emails — write with AI, preview exactly what clients receive, then copy into Brevo or send a test.
+                Brand-matched luxury emails — write with AI, preview live, and send directly to your client list via Brevo.
               </p>
             </div>
             <div class="panel-head-actions">
@@ -347,6 +347,76 @@
                 <textarea id="emBody" rows="12" placeholder="Write your email body here..."></textarea>
               </div>
 
+              <!-- Brevo API Direct Sending & Recipient Management -->
+              <!-- SECTION: RECIPIENT CLIENT EMAILS -->
+              <div class="form-field recipients-box">
+                <div class="recipients-head-row">
+                  <label for="emRecipients">
+                    <strong>Send To — Client Email Addresses *</strong>
+                    <span class="field-hint">(Enter or paste email IDs of people you need to send this email to)</span>
+                  </label>
+                  <span class="recipients-count-pill" id="recipientsCountPill">0 recipients</span>
+                </div>
+                <textarea id="emRecipients" rows="3" placeholder="Enter recipient email IDs separated by comma or new line...&#10;e.g. rajesh@singhania.com, priya@kapoors.in, client@domain.com"></textarea>
+
+                <div class="recipients-tools-bar">
+                  <span class="tools-label">Quick populate:</span>
+                  <button type="button" class="chip-btn" id="btnRecipientsAddLeads" title="Import all client email addresses saved in your CRM leads">
+                    👥 Add All CRM Leads with Email (<span id="crmLeadsEmailCount">0</span>)
+                  </button>
+                  <button type="button" class="chip-btn" id="btnRecipientsAddActive" title="Add active leads (New, Contacted, Site Visit, Negotiation)">
+                    🎯 Add Active Inquiries
+                  </button>
+                  <button type="button" class="chip-btn" id="btnClearRecipients" title="Clear recipient list">
+                    ✕ Clear List
+                  </button>
+                </div>
+                <p class="field-hint privacy-hint">
+                  🔒 <em>Discreet delivery: Each recipient receives their own private email. Email addresses are never shared or visible to other recipients.</em>
+                </p>
+              </div>
+
+              <!-- BREVO API LINK & CONFIGURATION CARD -->
+              <div class="brevo-link-card" id="brevoLinkCard">
+                <div class="brevo-link-header">
+                  <div class="brevo-link-status">
+                    <span class="status-indicator-dot" id="bcfgDot"></span>
+                    <strong id="bcfgTitle">Brevo API Link</strong>
+                    <span class="bcfg-status-text" id="bcfgStatusText">Checking connection…</span>
+                  </div>
+                  <button type="button" class="ghost-btn dark btn-xs" id="btnToggleBrevoConfig">
+                    ⚙️ Configure Brevo Key
+                  </button>
+                </div>
+
+                <div class="brevo-config-drawer hidden" id="brevoConfigDrawer">
+                  <p class="field-hint" style="margin-bottom: 10px;">
+                    Link your Brevo account to send emails directly from this dashboard. Get your free API key at <a href="https://app.brevo.com/settings/keys/api" target="_blank" rel="noopener">brevo.com → SMTP &amp; API</a>.
+                  </p>
+                  <div class="form-grid-2">
+                    <div class="form-field">
+                      <label for="cfgBrevoKey">Brevo API Key (v3) *</label>
+                      <input type="password" id="cfgBrevoKey" placeholder="xkeysib-..." autocomplete="off" />
+                    </div>
+                    <div class="form-field">
+                      <label for="cfgBrevoSender">Sender Email Address *</label>
+                      <input type="email" id="cfgBrevoSender" placeholder="vipulproviders@gmail.com" />
+                      <span class="field-hint">Must match your verified sender in Brevo.</span>
+                    </div>
+                  </div>
+                  <div class="form-field" style="margin-bottom: 10px;">
+                    <label for="cfgBrevoSenderName">Sender Display Name</label>
+                    <input type="text" id="cfgBrevoSenderName" placeholder="Providers Real Estate" />
+                  </div>
+                  <div style="display:flex; gap:10px; align-items:center; margin-top:4px;">
+                    <button type="button" class="solid-btn btn-sm" id="btnSaveBrevoConfig">
+                      💾 Save &amp; Test Connection
+                    </button>
+                    <span class="form-msg" id="bcfgMsg"></span>
+                  </div>
+                </div>
+              </div>
+
               <!-- Fixed Footer Notification -->
               <div class="fixed-footer-box">
                 <div class="ff-head">
@@ -360,17 +430,21 @@
 
               <!-- Action Buttons -->
               <div class="email-action-bar">
-                <button type="button" class="solid-btn copy-btn" id="btnCopyBrevoHTML">
+                <button type="button" class="solid-btn gold-btn btn-send-brevo-now" id="btnSendBrevoNow">
+                  🚀 Send Mails via Brevo Now
+                </button>
+                <button type="button" class="ghost-btn dark" id="btnOpenBrevoTestModal">
+                  ✉️ Send Test to Myself
+                </button>
+                <button type="button" class="ghost-btn dark copy-btn" id="btnCopyBrevoHTML">
                   📋 Copy HTML for Brevo
                 </button>
                 <button type="button" class="ghost-btn dark copy-btn" id="btnCopySubject">
                   📋 Copy Subject Line
                 </button>
-                <button type="button" class="ghost-btn dark" id="btnOpenBrevoTestModal">
-                  ✉️ Send Test Email
-                </button>
               </div>
               <p class="copy-status" id="copyStatusMsg"></p>
+              <p class="send-status-msg" id="sendStatusMsg"></p>
             </div>
 
             <!-- Right: Real-Time Live Preview -->
@@ -899,6 +973,46 @@ Schindler lift"></textarea>
           </div>
           <p class="form-msg" id="bt-msg"></p>
         </form>
+      </div>
+    </div>
+
+    <!-- MODAL: CONFIRM DIRECT BREVO CAMPAIGN SEND -->
+    <div class="admin-modal" id="sendConfirmModal" role="dialog" aria-hidden="true">
+      <div class="admin-modal-backdrop" id="sendConfirmModalBackdrop"></div>
+      <div class="admin-modal-box">
+        <button class="admin-modal-close" id="closeSendConfirmModal">&times;</button>
+        <h3 class="serif modal-heading">Confirm Brevo Campaign Dispatch</h3>
+        <p class="modal-subheading">You are about to send this luxury email campaign directly through the Brevo API to your client list.</p>
+
+        <div class="confirm-summary-card">
+          <div class="cs-row">
+            <span>Subject:</span>
+            <strong id="confirmModalSubject">—</strong>
+          </div>
+          <div class="cs-row">
+            <span>Sender:</span>
+            <span id="confirmModalSender">Providers Real Estate &lt;vipulproviders@gmail.com&gt;</span>
+          </div>
+          <div class="cs-row">
+            <span>Total Recipients:</span>
+            <strong class="confirm-badge" id="confirmModalCount">0 clients</strong>
+          </div>
+          <div class="cs-row full">
+            <span>Recipients Preview:</span>
+            <div class="confirm-recipients-list" id="confirmModalRecipientsList"></div>
+          </div>
+          <p class="field-hint" style="margin-top: 10px;">
+            🔒 <em>Each client will receive their own individual discreet email.</em>
+          </p>
+        </div>
+
+        <div class="lf-actions" style="margin-top: 20px;">
+          <button type="button" class="solid-btn gold-btn" id="btnExecuteSendBrevo">
+            🚀 Yes, Send Now via Brevo
+          </button>
+          <button type="button" class="ghost-btn dark" id="cancelSendConfirmModal">Cancel</button>
+        </div>
+        <p class="form-msg" id="confirmSendMsg"></p>
       </div>
     </div>
 

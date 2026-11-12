@@ -1437,6 +1437,7 @@ a {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .copy-status {
@@ -1446,6 +1447,216 @@ a {
   margin-top: 10px;
   opacity: 0;
   transition: opacity 0.3s ease;
+}
+
+.send-status-msg {
+  font-size: 13.5px;
+  font-weight: 500;
+  margin-top: 10px;
+  min-height: 20px;
+}
+
+/* Recipients Management Box */
+.recipients-box {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.recipients-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.recipients-count-pill {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #e8eef8;
+  color: #1d4f91;
+  border: 1px solid #c9d8ee;
+  white-space: nowrap;
+}
+
+.recipients-count-pill.has-recipients {
+  background: #e2f4e8;
+  color: var(--ok);
+  border-color: #b7e2c6;
+}
+
+.recipients-tools-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.tools-label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.privacy-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+/* Brevo Link & Credentials Card */
+.brevo-link-card {
+  background: #fdfaf3;
+  border: 1px solid #d9c9a4;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 12px 0 16px;
+}
+
+.brevo-link-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.brevo-link-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13.5px;
+}
+
+.status-indicator-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  background: #94a3b8;
+  transition: all 0.2s ease;
+}
+
+.status-indicator-dot.connected {
+  background: #1f7a45;
+  box-shadow: 0 0 0 3px rgba(31, 122, 69, 0.2);
+}
+
+.status-indicator-dot.unconfigured {
+  background: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.2);
+}
+
+.bcfg-status-text {
+  font-size: 12.5px;
+  color: var(--navy-900);
+  font-weight: 500;
+}
+
+.brevo-config-drawer {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed #d9c9a4;
+}
+
+.brevo-config-drawer.hidden {
+  display: none;
+}
+
+/* Standout Send Mails via Brevo button */
+.btn-send-brevo-now {
+  background: linear-gradient(135deg, #c5a059 0%, #b38e44 100%) !important;
+  color: #0b1830 !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 14px rgba(197, 160, 89, 0.35);
+  transition: all 0.15s ease;
+}
+
+.btn-send-brevo-now:hover {
+  box-shadow: 0 6px 20px rgba(197, 160, 89, 0.5);
+  transform: translateY(-1px);
+}
+
+.btn-send-brevo-now:active {
+  transform: translateY(0);
+}
+
+/* Confirm Send Modal Styles */
+.confirm-summary-card {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 16px;
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cs-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13.5px;
+}
+
+.cs-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.cs-row span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.cs-row.full {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.confirm-badge {
+  background: #e2f4e8;
+  color: var(--ok);
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  border: 1px solid #b7e2c6;
+}
+
+.confirm-recipients-list {
+  max-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  width: 100%;
+}
+
+.confirm-email-chip {
+  background: #eef2f8;
+  color: var(--navy-900);
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  border: 1px solid #d5dfea;
+  white-space: nowrap;
 }
 
 /* preview pane */
